@@ -305,8 +305,7 @@ class OscarConnection(protocol.Protocol):
         return [flap[1],data]
 
     def dataReceived(self,data):
-#        if isinstance(self, ChatService):
-#            logPacketData(data)
+        logPacketData(data)
         self.buf=self.buf+data
         flap=self.readFlap()
         while flap:
@@ -953,7 +952,19 @@ class BOSConnection(SNACBased):
                     messageFlags = ord(v[5])
                     messageStringLength = struct.unpack("<H", v[6:8])[0]
                     messageString = v[8:8+messageStringLength]
-                    if messageType == 0x06:
+                    message = [messageString]
+                    #log.msg("type = %d" % (messageType))
+                    #log.msg("uin = %s" % (uin))
+                    #log.msg("flags = %d" % (messageFlags))
+                    #log.msg("strlen = %d" % (messageStringLength))
+                    #log.msg("msg = %s" % (messageString))
+                    if messageType == 0x01:
+                        # old style message
+                        flags = []
+                        multiparts = []
+                        if messageStringLength > 0: multiparts.append(tuple(message))
+                        self.receiveMessage(user, multiparts, flags)
+                    elif messageType == 0x06:
                         # authorization request
                         self.gotAuthorizationRequest(uin)
                     elif messageType == 0x07:
