@@ -7,6 +7,7 @@
 This module is unstable.
 
 Maintainer: U{Paul Swartz<mailto:z3p@twistedmatrix.com>}
+Modifications done by: U{Daniel Henninger<mailto:jadestorm@nc.rr.com>}
 """
 
 from __future__ import nested_scopes
@@ -447,6 +448,32 @@ class BOSConnection(SNACBased):
             return u
         else:
             return u, rest
+
+    def parseBasicInfo(self,data):
+	result = ord(data[0])
+
+	pos = 0
+	nicklen = ord(data[pos+1])
+	pos = pos + 2
+	nick = data[2+1:pos+nicklen]
+
+	pos = pos + nicklen
+	firstlen = ord(data[pos+1])
+	pos = pos + 2
+	first = data[pos+1:pos+firstlen]
+
+	pos = pos + firstlen
+	lastlen = ord(data[pos+1])
+	pos = pos + 2
+	last = data[pos+1:pos+lastlen]
+
+	pos = pos + lastlen
+	emaillen = ord(data[pos+1])
+	pos = pos + 2
+	email = data[pos+1:pos+emaillen]
+
+	#print str(result)+" "+str(nicklen)+" ["+nick+"] "+str(firstlen)+" ["+first+"] "+str(lastlen)+" ["+last+"] "+str(emaillen)+" ["+email+"]\n"
+	return nick,first,last,email
 
     def oscar_01_05(self, snac, d = None):
         """
@@ -901,6 +928,17 @@ class BOSConnection(SNACBased):
         user, rest = self.parseUser(snac[5],1)
         tlvs = readTLVs(rest)
         return tlvs.get(0x02,None)
+
+    def getMetaInfo(self, user):
+        #if user.
+	reqdata = struct.pack("I",int(self.username))+'\xd0\x07\x08\x00\xba\x04'+struct.pack("I",int(user))
+	data = struct.pack("H",14)+reqdata
+        tlvs = TLV(0x01, data)
+        return self.sendSNAC(0x15, 0x02, tlvs).addCallback(self._cbGetMetaInfo)
+
+    def _cbGetMetaInfo(self, snac):
+        nick,first,last,email = self.parseBasicInfo(snac[5][16:])
+	return [nick,first,last,email]
 
     def getAway(self, user):
         return self.sendSNAC(0x02, 0x05, '\x00\x03'+chr(len(user))+user).addCallback(self._cbGetAway)
