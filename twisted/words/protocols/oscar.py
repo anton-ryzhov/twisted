@@ -87,12 +87,12 @@ def dehtml(text):
     text=string.replace(text,'&gt;','>')
     text=string.replace(text,'&lt;','<')
     text=string.replace(text,'&nbsp;',' ')
-    text=string.replace(text,'&#34;','"')
+    #text=string.replace(text,'&#34;','"')
     text=string.replace(text,'&amp;','&')
     return text
 
 def html(text):
-    text=string.replace(text,'"','&#34;')
+    #text=string.replace(text,'"','&#34;')
     text=string.replace(text,'&','&amp;')
     text=string.replace(text,'<','&lt;')
     text=string.replace(text,'>','&gt;')
