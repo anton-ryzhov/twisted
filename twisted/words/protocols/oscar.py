@@ -699,7 +699,7 @@ class BOSConnection(SNACBased):
                     messagetype = struct.unpack('b',v[20])[0]
                     messageflags = struct.unpack('b',v[21])[0]
                     messagelen = struct.unpack('H',v[22:24])[0]
-                    message = [v[24:24+messagelen-1]]
+                    message = [str(v[24:24+messagelen-2])]
                     #print "OFFLINE: "+str(senderuin)+" "+str(year)+"-"+str(month)+"-"+str(day)+" "+str(hour)+":"+str(minute)+" "+str(messagetype)+" "+str(messageflags)+" "+str(messagelen)+" "+message[0]+"\n"
 
                     if (messagelen > 0):
