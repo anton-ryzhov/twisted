@@ -25,6 +25,8 @@ import types
 import re
 import binascii
 
+import countrycodes
+
 def logPacketData(data):
     lines = len(data)/16
     if lines*16 != len(data): lines=lines+1
@@ -453,6 +455,160 @@ class BOSConnection(SNACBased):
         else:
             return u, rest
 
+    def parseMoreInfo(self, data):
+        result = ord(data[0])
+        if result != 0xa:
+            return
+        pos = 0
+        homepagelen = struct.unpack("<H", data[4:6])[0]
+        pos = 6+homepagelen
+        homepage = data[6:pos]
+        year = struct.unpack("<H", data[pos:pos+2])[0]
+        month = ord(data[pos+2])
+        day = ord(data[pos+3])
+        if year and month and day:
+            birth = "%04d-%02d-%02d"%(year,month,day)
+        else:
+            birth = ""
+        return homepage,birth
+
+    def parseWorkInfo(self, data):
+        result = ord(data[0])
+        if result != 0xa:
+            return
+
+        pos = 1
+        citylen = struct.unpack("<H",data[pos:pos+2])[0]
+        pos += 2
+        city = data[pos:pos+citylen]
+        pos += citylen
+
+        statelen = struct.unpack("<H",data[pos:pos+2])[0]
+        pos += 2
+        state = data[pos:pos+statelen]
+        pos += statelen
+        
+        phonelen = struct.unpack("<H",data[pos:pos+2])[0]
+        pos += 2
+        phone = data[pos:pos+phonelen]
+        pos += phonelen
+
+        faxlen = struct.unpack("<H",data[pos:pos+2])[0]
+        pos += 2
+        fax = data[pos:pos+faxlen]
+        pos += faxlen
+
+        addresslen = struct.unpack("<H",data[pos:pos+2])[0]
+        pos += 2
+        address = data[pos:pos+addresslen]
+        pos += addresslen
+
+        ziplen = struct.unpack("<H",data[pos:pos+2])[0]
+        pos += 2
+        zip = data[pos:pos+ziplen]
+        pos += ziplen
+
+        countrycode = struct.unpack(">H",data[pos:pos+2])[0]
+        if countrycode in countrycodes.countryCodes:
+            country = countrycodes.countryCodes[countrycode]
+        else:
+            country = ""
+        pos += 2
+
+        companylen = struct.unpack("<H",data[pos:pos+2])[0]
+        pos += 2
+        company = data[pos:pos+companylen]
+        pos += companylen
+        
+        departmentlen = struct.unpack("<H",data[pos:pos+2])[0]
+        pos += 2
+        department = data[pos:pos+departmentlen]
+        pos += departmentlen
+
+        positionlen = struct.unpack("<H",data[pos:pos+2])[0]
+        pos += 2
+        position = data[pos:pos+positionlen]
+        pos += departmentlen
+
+        return city,state,phone,fax,address,zip,country,company,department,position
+
+    def parseNotesInfo(self, data):
+        result = ord(data[0])
+        if result != 0xa:
+            return
+
+        noteslen = struct.unpack("<H", data[1:3])[0]
+        notes = data[3:3+noteslen]
+        return notes
+
+    def parseFullInfo(self, data):
+	result = ord(data[0])
+        if result != 0xa:
+            return
+	pos = 0
+	nicklen = ord(data[pos+1])
+	pos = pos + 2
+	nick = data[2+1:pos+nicklen]
+
+	pos = pos + nicklen
+	firstlen = ord(data[pos+1])
+	pos = pos + 2
+	first = data[pos+1:pos+firstlen]
+
+	pos = pos + firstlen
+	lastlen = ord(data[pos+1])
+	pos = pos + 2
+	last = data[pos+1:pos+lastlen]
+
+	pos = pos + lastlen
+	emaillen = ord(data[pos+1])
+	pos = pos + 2
+	email = data[pos+1:pos+emaillen]
+
+        pos = pos + emaillen
+        homeCitylen = ord(data[pos+1])
+        pos = pos + 2
+        homeCity = data[pos+1:pos+homeCitylen]
+
+        pos = pos + homeCitylen
+        homeStatelen = ord(data[pos+1])
+        pos = pos + 2
+        homeState = data[pos+1:pos+homeStatelen]
+
+        pos = pos + homeStatelen
+        homePhonelen = ord(data[pos+1])
+        pos = pos + 2
+        homePhone = data[pos+1:pos+homePhonelen]
+
+        pos = pos + homePhonelen
+        homeFaxlen = ord(data[pos+1])
+        pos = pos + 2
+        homeFax = data[pos+1:pos+homeFaxlen]
+
+        pos = pos + homeFaxlen
+        homeAddresslen = ord(data[pos+1])
+        pos = pos + 2
+        homeAddress = data[pos+1:pos+homeAddresslen]
+
+        pos = pos + homeAddresslen
+        cellPhonelen = ord(data[pos+1])
+        pos = pos + 2
+        cellPhone = data[pos+1:pos+cellPhonelen]
+        
+        pos = pos + cellPhonelen
+        homeZiplen = ord(data[pos+1])
+        pos = pos + 2
+        homeZip = data[pos+1:pos+homeZiplen]
+
+        homeCountrycode = struct.unpack(">H", data[pos+homeZiplen:pos+homeZiplen+2])[0]
+        if homeCountrycode in countrycodes.countryCodes:
+            homeCountry = countrycodes.countryCodes[homeCountrycode]
+        else:
+            homeCountry = ""
+
+	#print str(result)+" "+str(nicklen)+" ["+nick+"] "+str(firstlen)+" ["+first+"] "+str(lastlen)+" ["+last+"] "+str(emaillen)+" ["+email+"]\n"
+	return nick,first,last,email,homeCity,homeState,homePhone,homeFax,homeAddress,cellPhone,homeZip,homeCountry
+
     def parseBasicInfo(self,data):
 	result = ord(data[0])
 
@@ -688,20 +844,20 @@ class BOSConnection(SNACBased):
         tlvs = readTLVs(snac[3])
         for k, v in tlvs.items():
             if (k == 1):
-                targetuin = struct.unpack('I',v[2:6])[0]
-                type = struct.unpack('H',v[6:8])[0]
+                targetuin = struct.unpack('<I',v[2:6])[0]
+                type = struct.unpack('<H',v[6:8])[0]
                 if (type == 0x41):
                     # Offline message
-                    senderuin = struct.unpack('I',v[10:14])[0]
+                    senderuin = struct.unpack('<I',v[10:14])[0]
                     #print "senderuin: "+str(senderuin)+"\n"
-                    year = struct.unpack('H',v[14:16])[0]
+                    year = struct.unpack('<H',v[14:16])[0]
                     month = struct.unpack('b',v[16])[0]
                     day = struct.unpack('b',v[17])[0]
                     hour = struct.unpack('b',v[18])[0]
                     minute = struct.unpack('b',v[19])[0]
                     messagetype = struct.unpack('b',v[20])[0]
                     messageflags = struct.unpack('b',v[21])[0]
-                    messagelen = struct.unpack('H',v[22:24])[0]
+                    messagelen = struct.unpack('<H',v[22:24])[0]
                     message = [str(v[24:24+messagelen-2])]
                     #print "OFFLINE: "+str(senderuin)+" "+str(year)+"-"+str(month)+"-"+str(day)+" "+str(hour)+":"+str(minute)+" "+str(messagetype)+" "+str(messageflags)+" "+str(messagelen)+" "+message[0]+"\n"
 
@@ -714,11 +870,43 @@ class BOSConnection(SNACBased):
                         self.receiveMessage(user, multiparts, flags)
                 elif (type == 0x42):
                     # End of offline messages
-	            reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3e\x00\x02\x00'
+	            reqdata = '\x08\x00'+struct.pack("I",int(self.username))+'\x3e\x00\x02\x00'
                     tlvs = TLV(0x01, reqdata)
                     self.sendSNAC(0x15, 0x02, tlvs)
+                elif (type == 0x7da):
+                    # Meta information
+                    # print [ "%x" % ord(n) for n in v ]
+                    sequenceNumber = struct.unpack("<H",v[8:10])[0]
+                    rType = struct.unpack("<H",v[10:12])[0]
+                    if ord(v[12]) == 0x0a:
+                        if rType == 0xc8:
+                            # SNAC(15,03)/07DA/00C8 | META_BASIC_USERINFO
+                            # http://iserverd1.khstu.ru/oscar/snac_15_03_07da_00c8.html
+                            nick,first,last,email,homeCity,homeState,homePhone,homeFax,homeAddress,cellPhone,homeZip,homeCountry = self.parseFullInfo(v[12:])
+                            self.gotUserInfo(sequenceNumber, rType, [nick,first,last,email,homeCity,homeState,homePhone,homeFax,homeAddress,cellPhone,homeZip,homeCountry])
+                        elif rType == 0xdc:
+                            # SNAC(15,03)/07DA/00DC | META_MORE_USERINFO
+                            # http://iserverd1.khstu.ru/oscar/snac_15_03_07da_00dc.html
+                            homepage,birth = self.parseMoreInfo(v[12:])
+                            self.gotUserInfo(sequenceNumber, rType, [homepage,birth])
+                        elif rType == 0xeb or rType == 0x10e or rType == 0xf0 or rType == 0xfa:
+                            # for now we don't care about these
+                            self.gotUserInfo(sequenceNumber, rType, None)
+                        elif rType == 0xd2:
+                            # SNAC(15,03)/07DA/00D2 | META_WORK_USERINFO
+                            # http://iserverd1.khstu.ru/oscar/snac_15_03_07da_00d2.html
+                            city,state,phone,fax,address,zip,country,company,department,position = self.parseWorkInfo(v[12:])
+                            self.gotUserInfo(sequenceNumber, rType, [city,state,phone,fax,address,zip,country,company,department,position])
+                        elif rType == 0xe6:
+                            # SNAC(15,03)/07DA/00E6 | META_NOTES_USERINFO
+                            # http://iserverd1.khstu.ru/oscar/snac_15_03_07da_00e6.html
+                            usernotes = self.parseNotesInfo(v[12:])
+                            self.gotUserInfo(sequenceNumber, rType, [usernotes])
+                    else:
+                        self.gotUserInfo(sequenceNumber, 0xffff, None)
                 else:
-                    print "Unhandled type: "+str(type)+"\n"
+                    # can there be anything else
+                    pass
             elif (k == 2):
                 pass
             elif (k == 3):
@@ -984,22 +1172,24 @@ class BOSConnection(SNACBased):
         tlvs = readTLVs(rest)
         return tlvs.get(0x02,None)
 
-    def getMetaInfo(self, user):
+    def getMetaInfo(self, user, id):
         #if user.
-	reqdata = struct.pack("<I",int(self.username))+'\xd0\x07\x08\x00\xba\x04'+struct.pack("<I",int(user))
-	data = struct.pack("H",14)+reqdata
+        #reqdata = struct.pack("I",int(self.username))+'\xd0\x07\x08\x00\xba\x04'+struct.pack("I",int(user))
+        reqdata = struct.pack("<I",int(self.username))+'\xd0\x07'+ struct.pack("<H",id) +'\xb2\x04'+struct.pack("<I",int(user))
+        data = struct.pack("<H",14)+reqdata
         tlvs = TLV(0x01, data)
-        return self.sendSNAC(0x15, 0x02, tlvs).addCallback(self._cbGetMetaInfo)
+        #return self.sendSNAC(0x15, 0x02, tlvs).addCallback(self._cbGetMetaInfo)
+        return self.sendSNACnr(0x15, 0x02, tlvs)
 
-    def _cbGetMetaInfo(self, snac):
-        nick,first,last,email = self.parseBasicInfo(snac[5][16:])
-	return [nick,first,last,email]
+    #def _cbGetMetaInfo(self, snac):
+    #    nick,first,last,email = self.parseBasicInfo(snac[5][16:])
+#	return [nick,first,last,email]
 
     def requestOffline(self):
         """
         request offline messages
         """
-	reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3c\x00\x02\x00'
+	reqdata = '\x08\x00'+struct.pack("I",int(self.username))+'\x3c\x00\x02\x00'
         tlvs = TLV(0x01, reqdata)
         return self.sendSNAC(0x15, 0x02, tlvs)
 
@@ -1022,6 +1212,12 @@ class BOSConnection(SNACBased):
         called when we get the rate information, which means we should do other init. stuff.
         """
         log.msg('%s initDone' % self)
+        pass
+
+    def gotUserInfo(self, id, type, userinfo):
+        """
+        called when a user info packet is received
+        """
         pass
 
     def updateBuddy(self, user):
