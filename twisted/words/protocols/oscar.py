@@ -804,6 +804,25 @@ class BOSConnection(SNACBased):
             log.msg('unknown channel %02x' % channel)
             log.msg(tlvs)
 
+    def oscar_04_14(self, snac):
+        """
+        client/server typing notifications
+        """
+        data = snac[3]
+        scrnnamelen = int(struct.unpack('B',data[10:11])[0])
+        scrnname = str(data[11:11+scrnnamelen])
+        typestart = 11+scrnnamelen+1
+        type = struct.unpack('B', data[typestart])[0]
+        tlvs = dict()
+        user = OSCARUser(scrnname, None, tlvs)
+
+        if (type == 0x02):
+            self.receiveTypingNotify("begin", user)
+        if (type == 0x01):
+            self.receiveTypingNotify("idle", user)
+        elif (type == 0x00):
+            self.receiveTypingNotify("finish", user)
+
     def _cbGetChatInfoForInvite(self, info, user, message):
         apply(self.receiveChatInvite, (user,message)+info)
 
@@ -825,6 +844,15 @@ class BOSConnection(SNACBased):
         """
         SSI rights response
         """
+        #tlvs = readTLVs(snac[3])
+        pass # we don't know how to parse this
+
+    def oscar_13_0E(self, snac):
+        """
+        SSI modification response
+        """
+	print "Received SSI mod response"
+        print snac
         #tlvs = readTLVs(snac[3])
         pass # we don't know how to parse this
 
@@ -1010,7 +1038,7 @@ class BOSConnection(SNACBased):
                     groupID = 0
         if buddyID is None:
             buddyID = item.group.findIDFor(item)
-        return self.sendSNAC(0x13,0x08, item.oscarRep(groupID, buddyID))
+        return self.sendSNAC(0x13,0x08, item.oscarRep(groupID, buddyID)).addCallback(self.oscar_13_0E)
 
     def modifyItemSSI(self, item, groupID = None, buddyID = None):
         if groupID is None:
@@ -1103,10 +1131,10 @@ class BOSConnection(SNACBased):
             charSet = 0
             if 'unicode' in part[1:]:
                 charSet = 2
-                part[0] = part[0].encode('utf-8')
+                part[0] = part[0].encode('utf-8', 'replace')
             elif 'iso-8859-1' in part[1:]:
                 charSet = 3
-                part[0] = part[0].encode('iso-8859-1')
+                part[0] = part[0].encode('iso-8859-1', 'replace')
             elif 'none' in part[1:]:
                 charSet = 0xffff
             if 'macintosh' in part[1:]:
@@ -1116,7 +1144,7 @@ class BOSConnection(SNACBased):
             messageData = messageData + '\x01\x01' + \
                           struct.pack('!3H',len(part[0])+4,charSet,charSubSet)
             messageData = messageData + part[0]
-        data = data + TLV(2, '\x05\x01\x00\x03\x01\x01\x02'+messageData)
+        data = data.encode('iso-8859-1', 'replace') + TLV(2, '\x05\x01\x00\x03\x01\x01\x02'+messageData)
         if wantAck:
             data = data + TLV(3,'')
         if autoResponse:
@@ -1212,6 +1240,10 @@ class BOSConnection(SNACBased):
     def _cbreqOffline(self, snac):
         print "arg"
 
+    def sendTypingNotification(self, user, type):
+        #if user.
+        return self.sendSNAC(0x04, 0x14, '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01'+chr(len(user))+user+type)
+
     def getAway(self, user):
         return self.sendSNAC(0x02, 0x05, '\x00\x03'+chr(len(user))+user).addCallback(self._cbGetAway)
 
@@ -1260,6 +1292,14 @@ class BOSConnection(SNACBased):
         """
         called when someone warns us.
         user is either None (if it was anonymous) or an OSCARUser
+        """
+        pass
+
+    def receiveTypingNotify(self, type, user):
+        """
+        called when a typing notification occurs.
+        type can be "begin", "idle", or "finish".
+        user is an OSCARUser.
         """
         pass
 
@@ -1546,16 +1586,38 @@ TLV_CLIENTSUB = 0x001A
 TLV_PASSWORD = 0x0025
 TLV_USESSI = 0x004A
 
-#CAP_ICON = '\011F\023FL\177\021\321\202"DEST\000\000'
+###
+# Capabilities
+###
+
+# Supports avatars/buddy icons
 CAP_ICON = '\x09\x46\x13\x46\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
-#CAP_VOICE = '\011F\023AL\177\021\321\202"DEST\000\000'
+# Supports voice chat
 CAP_VOICE = '\x09\x46\x13\x41\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
-CAP_IMAGE = '\011F\023EL\177\021\321\202"DEST\000\000'
-#CAP_CHAT = 't\217$ b\207\021\321\202"DEST\000\000'
+# Supports direct image/direct im
+CAP_IMAGE = '\x09\x46\x13\x45\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
+# Supports chat
 CAP_CHAT = '\x74\x8F\x24\x20\x62\x87\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
-CAP_GET_FILE = '\011F\023HL\177\021\321\202"DEST\000\000'
-CAP_SEND_FILE = '\011F\023CL\177\021\321\202"DEST\000\000'
-CAP_GAMES = '\011F\023GL\177\021\321\202"DEST\000\000'
-CAP_SEND_LIST = '\011F\023KL\177\021\321\202"DEST\000\000'
-CAP_SERV_REL = '\011F\023IL\177\021\321\202"DEST\000\000'
+# Supports file transfers (can accept files)
+CAP_GET_FILE = '\x09\x46\x13\x48\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
+# Supports file transfers (can send files)
+CAP_SEND_FILE = '\x09\x46\x13\x43\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
+# Supports games
+CAP_GAMES = '\x09\x46\x13\x4A\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
+# Supports buddy list transfer
+CAP_SEND_LIST = '\x09\x46\x13\x4B\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
+# Supports channel 2 extended
+CAP_SERV_REL = '\x09\x46\x13\x49\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
+# Allow communication between ICQ and AIM
 CAP_CROSS_CHAT = '\x09\x46\x13\x4D\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
+# Supports UTF-8 encoded messages
+CAP_UTF = '\x09\x46\x13\x4E\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
+# Supports RTF messages
+CAP_RTF = '\x97\xB1\x27\x51\x24\x3C\x43\x34\xAD\x22\xD6\xAB\xF7\x3F\x14\x92'
+
+###
+# Typing notification status codes
+###
+MTN_FINISH = '\x00\x00'
+MTN_IDLE = '\x00\x01'
+MTN_BEGIN = '\x00\x02'
