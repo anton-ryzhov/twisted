@@ -427,6 +427,7 @@ class BOSConnection(SNACBased):
     }
 
     capabilities = None
+    statusindicators = 0x0000
 
     def __init__(self,username,cookie):
         SNACBased.__init__(self,cookie)
@@ -1102,7 +1103,7 @@ class BOSConnection(SNACBased):
             icqStatus = 0x20
         else:
             icqStatus = 0x00
-        self.sendSNACnr(0x01, 0x1e, TLV(0x06, struct.pack(">L", icqStatus)))
+        self.sendSNACnr(0x01, 0x1e, TLV(0x06, struct.pack(">HH", self.statusindicators, icqStatus)))
 
     def setIdleTime(self, idleTime):
         """
@@ -1613,6 +1614,24 @@ CAP_CROSS_CHAT = '\x09\x46\x13\x4D\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x
 CAP_UTF = '\x09\x46\x13\x4E\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
 # Supports RTF messages
 CAP_RTF = '\x97\xB1\x27\x51\x24\x3C\x43\x34\xAD\x22\xD6\xAB\xF7\x3F\x14\x92'
+
+###
+# Status indicators
+###
+# Web status icons should be updated to show status
+STATUS_WEBAWARE = 0x0001
+# IP address should be provided to requestors
+STATUS_SHOWIP = 0x0002
+# Indicate that it is the user's birthday
+STATUS_BIRTHDAY = 0x0008
+# "User active webfront flag"... no idea
+STATUS_WEBFRONT = 0x0020
+# Client does not support direct connections
+STATUS_DCDISABLED = 0x0100
+# Client will do direct connections upon authorization
+STATUS_DCAUTH = 0x1000
+# Client will only do direct connections with contact users
+STATUS_DCCONT = 0x2000
 
 ###
 # Typing notification status codes
