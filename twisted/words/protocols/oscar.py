@@ -204,7 +204,10 @@ class SSIGroup:
         user.group = self
 
     def oscarRep(self, groupID, buddyID):
-        tlvData = TLV(0xc8, reduce(lambda x,y:x+y, [struct.pack('!H',self.usersToID[x]) for x in self.users]))
+	if len(self.users) > 0:
+	        tlvData = TLV(0xc8, reduce(lambda x,y:x+y, [struct.pack('!H',self.usersToID[x]) for x in self.users]))
+	else:
+		tlvData = ""
         return struct.pack('!H', len(self.name)) + self.name + \
                struct.pack('!HH', groupID, buddyID) + '\000\001' + tlvData
 
@@ -711,7 +714,7 @@ class BOSConnection(SNACBased):
                         self.receiveMessage(user, multiparts, flags)
                 elif (type == 0x42):
                     # End of offline messages
-	            reqdata = '\x08\x00'+struct.pack("I",int(self.username))+'\x3e\x00\x02\x00'
+	            reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3e\x00\x02\x00'
                     tlvs = TLV(0x01, reqdata)
                     self.sendSNAC(0x15, 0x02, tlvs)
                 else:
@@ -778,7 +781,7 @@ class BOSConnection(SNACBased):
                 if not tlvs.has_key(0xcb):
                     continue # this happens with ICQ
                 permitMode = {1:'permitall',2:'denyall',3:'permitsome',4:'denysome',5:'permitbuddies'}[ord(tlvs[0xca])]
-                visibility = {'\xff\xff\xff\xff':'all','\x00\x00\x00\x04':'notaim'}[tlvs[0xcb]]
+                visibility = {'\xff\xff\xff\xff':'all','\x00\x00\x00\x04':'notaim'}.get(tlvs[0xcb], 'unknown')
             elif itemType == 5: # unknown (perhaps idle data)?
                 pass
             else:
@@ -813,7 +816,10 @@ class BOSConnection(SNACBased):
             if isinstance(item, SSIGroup):
                 groupID = 0
             else:
-                groupID = item.group.group.findIDFor(item.group)
+                if hasattr(item.group, "group"):
+                    groupID = item.group.group.findIDFor(item.group)
+                else:
+                    groupID = 0
         if buddyID is None:
             buddyID = item.group.findIDFor(item)
         return self.sendSNAC(0x13,0x08, item.oscarRep(groupID, buddyID))
@@ -825,7 +831,10 @@ class BOSConnection(SNACBased):
             else:
                 groupID = item.group.group.findIDFor(item.group)
         if buddyID is None:
-            buddyID = item.group.findIDFor(item)
+            if hasattr(item, "group"):
+                buddyID = item.group.findIDFor(item)
+            else:
+                buddyID = 0
         return self.sendSNAC(0x13,0x09, item.oscarRep(groupID, buddyID))
 
     def delItemSSI(self, item, groupID = None, buddyID = None):
@@ -977,7 +986,7 @@ class BOSConnection(SNACBased):
 
     def getMetaInfo(self, user):
         #if user.
-	reqdata = struct.pack("I",int(self.username))+'\xd0\x07\x08\x00\xba\x04'+struct.pack("I",int(user))
+	reqdata = struct.pack("<I",int(self.username))+'\xd0\x07\x08\x00\xba\x04'+struct.pack("<I",int(user))
 	data = struct.pack("H",14)+reqdata
         tlvs = TLV(0x01, data)
         return self.sendSNAC(0x15, 0x02, tlvs).addCallback(self._cbGetMetaInfo)
@@ -990,7 +999,7 @@ class BOSConnection(SNACBased):
         """
         request offline messages
         """
-	reqdata = '\x08\x00'+struct.pack("I",int(self.username))+'\x3c\x00\x02\x00'
+	reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3c\x00\x02\x00'
         tlvs = TLV(0x01, reqdata)
         return self.sendSNAC(0x15, 0x02, tlvs)
 
