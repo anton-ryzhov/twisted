@@ -23,6 +23,7 @@ import random
 import time
 import types
 import re
+import binascii
 
 def logPacketData(data):
     lines = len(data)/16
@@ -677,6 +678,51 @@ class BOSConnection(SNACBased):
         self.sendSNAC(0x01, 0x0E, '').addCallback(self._cbRequestSelfInfo, d)
         return d
 
+    def oscar_15_03(self, snac):
+        """
+        Meta information (Offline messages, extended info about users)
+        """
+        tlvs = readTLVs(snac[3])
+        for k, v in tlvs.items():
+            if (k == 1):
+                targetuin = struct.unpack('I',v[2:6])[0]
+                type = struct.unpack('H',v[6:8])[0]
+                if (type == 0x41):
+                    # Offline message
+                    senderuin = struct.unpack('I',v[10:14])[0]
+                    #print "senderuin: "+str(senderuin)+"\n"
+                    year = struct.unpack('H',v[14:16])[0]
+                    month = struct.unpack('b',v[16])[0]
+                    day = struct.unpack('b',v[17])[0]
+                    hour = struct.unpack('b',v[18])[0]
+                    minute = struct.unpack('b',v[19])[0]
+                    messagetype = struct.unpack('b',v[20])[0]
+                    messageflags = struct.unpack('b',v[21])[0]
+                    messagelen = struct.unpack('H',v[22:24])[0]
+                    message = [v[24:24+messagelen-1]]
+                    #print "OFFLINE: "+str(senderuin)+" "+str(year)+"-"+str(month)+"-"+str(day)+" "+str(hour)+":"+str(minute)+" "+str(messagetype)+" "+str(messageflags)+" "+str(messagelen)+" "+message[0]+"\n"
+
+                    if (messagelen > 0):
+                        flags = []
+                        multiparts = []
+                        tlvs = dict()
+                        multiparts.append(tuple(message))
+                        user = OSCARUser(str(senderuin), None, tlvs)
+                        self.receiveMessage(user, multiparts, flags)
+                elif (type == 0x42):
+                    # End of offline messages
+	            reqdata = '\x08\x00'+struct.pack("I",int(self.username))+'\x3e\x00\x02\x00'
+                    tlvs = TLV(0x01, reqdata)
+                    self.sendSNAC(0x15, 0x02, tlvs)
+                else:
+                    print "Unhandled type: "+str(type)+"\n"
+            elif (k == 2):
+                pass
+            elif (k == 3):
+                pass
+            else:
+                print str(k)+":::"+str(v)+"\n"
+
     def _cbRequestSelfInfo(self, snac, d):
         d.callback(self.parseUser(snac[5]))
 
@@ -939,6 +985,17 @@ class BOSConnection(SNACBased):
     def _cbGetMetaInfo(self, snac):
         nick,first,last,email = self.parseBasicInfo(snac[5][16:])
 	return [nick,first,last,email]
+
+    def requestOffline(self):
+        """
+        request offline messages
+        """
+	reqdata = '\x08\x00'+struct.pack("I",int(self.username))+'\x3c\x00\x02\x00'
+        tlvs = TLV(0x01, reqdata)
+        return self.sendSNAC(0x15, 0x02, tlvs)
+
+    def _cbreqOffline(self, snac):
+        print "arg"
 
     def getAway(self, user):
         return self.sendSNAC(0x02, 0x05, '\x00\x03'+chr(len(user))+user).addCallback(self._cbGetAway)
