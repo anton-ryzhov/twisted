@@ -366,12 +366,15 @@ class SNACBased(OscarConnection):
 
         self.requestCallbacks[reqid] = d
 
-        self.outRateLock.acquire()
-        delay=self.calcDelay(fam,sub)
-        time.sleep(delay) 
-        self.sendFLAP(SNAC(fam,sub,reqid,data))
-        self.updateRate(fam,sub)
-        self.outRateLock.release()
+        #self.outRateLock.acquire()
+        #delay=self.calcDelay(fam,sub)
+        #time.sleep(delay) 
+        #self.sendFLAP(SNAC(fam,sub,reqid,data))
+        #self.updateRate(fam,sub)
+        #self.outRateLock.release()
+        delay=self.reserveDelay(fam,sub)
+        snac=SNAC(fam,sub,reqid,data)
+        threading.Timer(delay,self.sendFLAP,[snac]).start()
         return d
 
     def _ebDeferredError(self, error, fam, sub, data):
@@ -383,12 +386,22 @@ class SNACBased(OscarConnection):
         """
         send a snac, but don't bother adding a deferred, we don't care.
         """
+        #self.outRateLock.acquire()
+        #delay=self.calcDelay(fam,sub)
+        #time.sleep(delay)           
+        #self.sendFLAP(SNAC(fam,sub,0x10000*fam+sub,data))
+        #self.updateRate(fam,sub)
+        #self.outRateLock.release()
+        delay=self.reserveDelay(fam,sub)
+        snac=SNAC(fam,sub,0x10000*fam+sub,data)
+        threading.Timer(delay,self.sendFLAP,[snac]).start()
+
+    def reserveDelay(self,fam,sub):
         self.outRateLock.acquire()
         delay=self.calcDelay(fam,sub)
-        time.sleep(delay)           
-        self.sendFLAP(SNAC(fam,sub,0x10000*fam+sub,data))
-        self.updateRate(fam,sub)
+        self.updateRate(fam,sub,delay)
         self.outRateLock.release()
+        return delay
 
     def calcDelay(self,fam,sub):
         if (not self.outRateTable.has_key(str(fam)+str(sub))):
@@ -407,7 +420,7 @@ class SNACBased(OscarConnection):
             #print "delay "+ str(nextTime-now)
             return (nextTime-now)                        
 
-    def updateRate(self,fam,sub):
+    def updateRate(self,fam,sub,delay=0):
         if (not self.outRateTable.has_key(str(fam)+str(sub))):
             return
         rateclass=self.outRateTable[str(fam)+str(sub)]
@@ -415,7 +428,7 @@ class SNACBased(OscarConnection):
         lasttime=self.outRateInfo[rateclass]['lasttime']
         currentrate=self.outRateInfo[rateclass]['currentrate']
         maxrate=self.outRateInfo[rateclass]['maxrate']
-        now=time.time()
+        now=time.time()+delay
  
         newrate=(window-1.)/window * currentrate + 1./window * (now-lasttime)*1000
         if (newrate > maxrate):
