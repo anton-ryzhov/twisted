@@ -23,6 +23,7 @@ import time
 import types
 import re
 import binascii
+import threading
 
 import countrycodes
 
@@ -133,7 +134,7 @@ class OSCARUser:
                 elif v[2] == '\x02':
                     self.icqStatus = 'dnd'
                 elif v[2] == '\x04':
-                    self.icqStatus = 'out'
+                    self.icqStatus = 'xa'
                 elif v[2] == '\x10':
                     self.icqStatus = 'busy'
                 else:
@@ -183,8 +184,10 @@ class OSCARUser:
 
 
 class SSIGroup:
-    def __init__(self, name, tlvs = {}):
+    def __init__(self, name, groupID, buddyID, tlvs = {}):
         self.name = name
+        self.groupID = groupID
+        self.buddyID = buddyID
         #self.tlvs = []
         #self.userIDs = []
         self.usersToID = {}
@@ -204,21 +207,32 @@ class SSIGroup:
         self.users.append(user)
         user.group = self
 
-    def oscarRep(self, groupID, buddyID):
-	if len(self.users) > 0:
-	        tlvData = TLV(0xc8, reduce(lambda x,y:x+y, [struct.pack('!H',self.usersToID[x]) for x in self.users]))
-	else:
-		tlvData = ""
-        return struct.pack('!H', len(self.name)) + self.name + \
-               struct.pack('!HH', groupID, buddyID) + '\000\001' + tlvData
+    def oscarRep(self):
+        data = struct.pack(">H", len(self.name)) +self.name
+        tlvs = TLV(0xc8, struct.pack(">H",len(self.users)))
+        data += struct.pack(">4H", self.groupID, self.buddyID, 1, len(tlvs))
+        return data+tlvs
+#	if len(self.users) > 0:
+#	        tlvData = TLV(0xc8, reduce(lambda x,y:x+y, [struct.pack('!H',self.usersToID[x]) for x in self.users]))
+#	else:
+#		tlvData = ""
+#        return struct.pack('!H', len(self.name)) + self.name + \
+#               struct.pack('!HH', groupID, buddyID) + '\000\001' + \
+#               struct.pack(">H", len(tlvData)) + tlvData
 
 
 class SSIBuddy:
-    def __init__(self, name, tlvs = {}):
+    def __init__(self, name, groupID, buddyID, tlvs = {}):
         self.name = name
+        self.groupID = groupID
+        self.buddyID = buddyID
         self.tlvs = tlvs
+        self.authorizationRequestSent = False
+        self.authorized = True
         for k,v in tlvs.items():
-            if k == 0x013c: # buddy comment
+            if k == 0x0066: # awaiting authorization
+                self.authorized = False
+            elif k == 0x013c: # buddy comment
                 self.buddyComment = v
             elif k == 0x013d: # buddy alerts
                 actionFlag = ord(v[0])
@@ -238,10 +252,16 @@ class SSIBuddy:
             elif k == 0x013e:
                 self.alertSound = v
  
-    def oscarRep(self, groupID, buddyID):
-        tlvData = reduce(lambda x,y: x+y, map(lambda (k,v):TLV(k,v), self.tlvs.items()), '\000\000')
-        return struct.pack('!H', len(self.name)) + self.name + \
-               struct.pack('!HH', groupID, buddyID) + '\000\000' + tlvData
+    def oscarRep(self):
+        data = struct.pack(">H", len(self.name)) + self.name
+        tlvs = ""
+        if not self.authorized:
+            tlvs += TLV(0x0066, "") # awaiting authozir
+        data += struct.pack(">4H", self.groupID, self.buddyID, 0, len(tlvs))
+        return data+tlvs
+#        tlvData = reduce(lambda x,y: x+y, map(lambda (k,v):TLV(k,v), self.tlvs.items()), '\000\000')
+#        return struct.pack('!H', len(self.name)) + self.name + \
+#               struct.pack('!HH', groupID, buddyID) + '\000\000' + tlvData
 
 
 class OscarConnection(protocol.Protocol):
@@ -249,6 +269,8 @@ class OscarConnection(protocol.Protocol):
         self.state=""
         self.seqnum=0
         self.buf=''
+        self.outRate=6000
+        self.outTime=time.time()
         self.stopKeepAliveID = None
         self.setKeepAlive(4*60) # 4 minutes
 
@@ -327,6 +349,9 @@ class SNACBased(OscarConnection):
         self.lastID=0
         self.supportedFamilies = ()
         self.requestCallbacks={} # request id:Deferred
+        self.outRateTable={}
+        self.outRateInfo={}
+        self.outRateLock=threading.Lock()
 
     def sendSNAC(self,fam,sub,data,flags=[0,0]):
         """
@@ -340,7 +365,13 @@ class SNACBased(OscarConnection):
         #d.addErrback(self._ebDeferredError,fam,sub,data) # XXX for testing
 
         self.requestCallbacks[reqid] = d
+
+        self.outRateLock.acquire()
+        delay=self.calcDelay(fam,sub)
+        time.sleep(delay) 
         self.sendFLAP(SNAC(fam,sub,reqid,data))
+        self.updateRate(fam,sub)
+        self.outRateLock.release()
         return d
 
     def _ebDeferredError(self, error, fam, sub, data):
@@ -352,7 +383,47 @@ class SNACBased(OscarConnection):
         """
         send a snac, but don't bother adding a deferred, we don't care.
         """
+        self.outRateLock.acquire()
+        delay=self.calcDelay(fam,sub)
+        time.sleep(delay)           
         self.sendFLAP(SNAC(fam,sub,0x10000*fam+sub,data))
+        self.updateRate(fam,sub)
+        self.outRateLock.release()
+
+    def calcDelay(self,fam,sub):
+        if (not self.outRateTable.has_key(str(fam)+str(sub))):
+            #print "no rateclass for "+ str(fam)+","+str(sub)
+            return 0
+        rateclass=self.outRateTable[str(fam)+str(sub)]
+        target=self.outRateInfo[rateclass]['clear']
+        window=self.outRateInfo[rateclass]['window']
+        lasttime=self.outRateInfo[rateclass]['lasttime']
+        currentrate=self.outRateInfo[rateclass]['currentrate']
+        nextTime=(window*target-(window-1)*currentrate)/1000.+lasttime
+        now=time.time()
+        if (nextTime < now):
+            return 0
+        else:
+            #print "delay "+ str(nextTime-now)
+            return (nextTime-now)                        
+
+    def updateRate(self,fam,sub):
+        if (not self.outRateTable.has_key(str(fam)+str(sub))):
+            return
+        rateclass=self.outRateTable[str(fam)+str(sub)]
+        window=self.outRateInfo[rateclass]['window']
+        lasttime=self.outRateInfo[rateclass]['lasttime']
+        currentrate=self.outRateInfo[rateclass]['currentrate']
+        maxrate=self.outRateInfo[rateclass]['maxrate']
+        now=time.time()
+ 
+        newrate=(window-1.)/window * currentrate + 1./window * (now-lasttime)*1000
+        if (newrate > maxrate):
+            newrate=maxrate
+        #print "rateclass "+str(rateclass)+" newrate "+str(newrate)
+
+        self.outRateInfo[rateclass]['lasttime']=now
+        self.outRateInfo[rateclass]['currentrate']=newrate
 
     def oscar_(self,data):
         self.sendFLAP("\000\000\000\001"+TLV(6,self.cookie), 0x01)
@@ -394,7 +465,29 @@ class SNACBased(OscarConnection):
         change of rate information.
         """
         # this can be parsed, maybe we can even work it in
-        pass
+        info=struct.unpack('!HHLLLLLLL',snac[3][8:40])
+        code=info[0]
+        rateclass=info[1]
+        window=info[2]
+        clear=info[3]
+        alert=info[4]
+        limit=info[5]
+        disconnect=info[6]
+        current=info[7]
+        maximum=info[8]
+
+        self.outRateLock.acquire()
+        self.outRateInfo[rateclass]['window']=window
+        self.outRateInfo[rateclass]['clear']=clear
+        self.outRateInfo[rateclass]['currentrate']=current
+        self.outRateInfo[rateclass]['maxrate']=maximum
+        self.outRateLock.release()
+
+        #print "CHRIS: "
+        #print info
+        if (code==3):
+               import sys
+               sys.exit()
 
     def oscar_01_18(self,snac):
         """
@@ -657,6 +750,31 @@ class BOSConnection(SNACBased):
         """
         rate paramaters
         """
+        self.outRateInfo={}
+        self.outRateTable={}
+        count=struct.unpack('!H',snac[3][0:2])[0]
+        #print 'count: '+str(count)
+        snac[3]=snac[3][2:]
+        for i in range(count):
+              info=struct.unpack('!HLLLLLLL',snac[3][:30])
+              print "class ID: "+str(info[0])
+              self.outRateInfo[info[0]]={'window':info[1],'clear':info[2],'currentrate':info[6],'lasttime':time.time(),'maxrate':info[7]}
+              snac[3]=snac[3][35:]
+              print len(snac[3])
+        #print self.outRateInfo
+        while (len(snac[3]) > 0):
+              info=struct.unpack('!HH',snac[3][:4])
+              #print "class ID: "+str(info[0])+" count: "+str(info[1])
+              #print "reqiring "+str(info[1]*4)+" bytes out of "+str(len(snac[3][4:]))
+              classID=info[0]
+              count=info[1]
+              info=struct.unpack('!'+str(2*count)+'H',snac[3][4:4+count*4])
+              while (len(info)>0):
+                   snacid=str(info[0])+str(info[1])
+                   self.outRateTable[snacid]=classID
+                   info=info[2:]
+              snac[3]=snac[3][4+count*4:]             
+
         self.sendSNACnr(0x01,0x08,"\x00\x01\x00\x02\x00\x03\x00\x04\x00\x05") # ack
         self.initDone()
         self.sendSNACnr(0x13,0x02,'') # SSI rights info
@@ -802,6 +920,25 @@ class BOSConnection(SNACBased):
             else:
                 log.msg('unsupported rondevouz: %s' % requestClass)
                 log.msg(repr(moreTLVs))
+        elif channel == 4:
+            for k,v in tlvs.items():
+                if k == 5:
+                    # message data
+                    uinHandle = struct.unpack("<I", v[:4])[0]
+                    uin = "%s"%uinHandle
+                    messageType = ord(v[4])
+                    messageFlags = ord(v[5])
+                    messageStringLength = struct.unpack("<H", v[6:8])[0]
+                    messageString = v[8:8+messageStringLength]
+                    if messageType == 0x06:
+                        # authorization request
+                        self.gotAuthorizationRequest(uin)
+                    elif messageType == 0x07:
+                        # authorization denied
+                        self.gotAuthorizationRespons(uin, False)
+                    elif messageType == 0x08:
+                        # authorization ok
+                        self.gotAuthorizationRespons(uin, True)
         else:
             log.msg('unknown channel %02x' % channel)
             log.msg(tlvs)
@@ -853,10 +990,60 @@ class BOSConnection(SNACBased):
         """
         SSI modification response
         """
-	print "Received SSI mod response"
-        print snac
         #tlvs = readTLVs(snac[3])
         pass # we don't know how to parse this
+
+    def oscar_13_19(self, snac):
+        """
+        Got authorization request
+        """
+        pos = 0
+        if 0x80 & snac[0] or 0x80 & snac[1]:
+            sLen,id,length = struct.unpack(">HHH", snac[3][:6])
+            pos = 6 + length
+        uinlen = ord(snac[3][pos])
+        pos += 1
+        uin = snac[3][pos:pos+uinlen]
+        pos += uinlen
+        self.gotAuthorizationRequest(uin)
+
+
+    def oscar_13_1B(self, snac):
+        """
+        Got authorization respons
+        """
+        pos = 0
+        if 0x80 & snac[0] or 0x80 & snac[1]:
+            sLen,id,length = struct.unpack(">HHH", snac[3][:6])
+            pos = 6 + length
+        uinlen = ord(snac[3][pos])
+        pos += 1
+        uin = snac[3][pos:pos+uinlen]
+        pos += uinlen
+        success = ord(snac[3][pos])
+        pos += 1
+        reasonlen = struct.unpack(">H", snac[3][pos:pos+2])[0]
+        pos += 2
+        reason = snac[3][pos:]
+        if success:
+            # authorization request successfully granted
+            self.gotAuthorizationRespons(uin, True)
+        else:
+            # authorization request was not granted
+            self.gotAuthorizationRespons(uin, False)
+
+    def oscar_13_1C(self, snac):
+        """
+        SSI Your were added to someone's buddylist
+        """
+        pos = 0
+        if 0x80 & snac[0] or 0x80 & snac[1]:
+            sLen,id,length = struct.unpack(">HHH", snac[3][:6])
+            pos = 6 + length
+            val = snac[3][4:pos]
+        uinLen = ord(snac[3][pos])
+        uin = snac[3][pos+1:pos+1+uinLen]
+        self.youWereAdded(uin)
 
     # methods to be called by the client, and their support methods
     def requestSelfInfo(self):
@@ -986,9 +1173,9 @@ class BOSConnection(SNACBased):
             tlvs = readTLVs(itemdata[10+nameLength:10+nameLength+restLength])
             itemdata = itemdata[10+nameLength+restLength:]
             if itemType == 0: # buddies
-                groups[groupID].addUser(buddyID, SSIBuddy(name, tlvs))
+                groups[groupID].addUser(buddyID, SSIBuddy(name, groupID, buddyID, tlvs))
             elif itemType == 1: # group
-                g = SSIGroup(name, tlvs)
+                g = SSIGroup(name, groupID, buddyID, tlvs)
                 if groups.has_key(0): groups[0].addUser(groupID, g)
                 groups[groupID] = g
             elif itemType == 2: # permit
@@ -1029,22 +1216,46 @@ class BOSConnection(SNACBased):
         """
         self.sendSNACnr(0x13,0x11,'')
 
-    def addItemSSI(self, item, groupID = None, buddyID = None):
+    def addItemSSI(self, item):
         """
         add an item to the SSI server.  if buddyID == 0, then this should be a group.
         this gets a callback when it's finished, but you can probably ignore it.
         """
-        if groupID is None:
-            if isinstance(item, SSIGroup):
-                groupID = 0
-            else:
-                if hasattr(item.group, "group"):
-                    groupID = item.group.group.findIDFor(item.group)
-                else:
-                    groupID = 0
-        if buddyID is None:
-            buddyID = item.group.findIDFor(item)
-        return self.sendSNAC(0x13,0x08, item.oscarRep(groupID, buddyID)).addCallback(self.oscar_13_0E)
+        d = self.sendSNAC(0x13,0x08, item.oscarRep())
+        log.msg("addItemSSI: adding %s, g:%d, u:%d"%(item.name, item.groupID, item.buddyID))
+        d.addCallback(self._cbAddItemSSI, item)
+        return d
+
+    def _cbAddItemSSI(self, snac, item):
+        pos = 0
+        if snac[2] & 0x80 or snac[3] & 0x80:
+            sLen,id,length = struct.unpack(">HHH", snac[5][:6])
+            pos = 6 + length
+        if snac[5][pos:pos+2] == "\00\00":
+# success
+#                data = struct.pack(">H", len(groupName))+groupName
+#                data += struct.pack(">HH", 0, 1)
+#                tlvData = TLV(0xc8, struct.pack(">H", buddyID))
+#                data += struct.pack(">H", len(tlvData))+tlvData
+#                self.sendSNACnr(0x13,0x09, data)
+            if item.buddyID != 0: # is it a buddy or a group?
+                self.buddyAdded(item.name)
+        elif snac[5][pos:pos+2] == "\00\x0a":
+            # invalid, error while adding
+            pass
+        elif snac[5][pos:pos+2] == "\00\x0c":
+            # limit exceeded
+            self.errorMessage("Contact list limit exceeded")
+        elif snac[5][pos:pos+2] == "\00\x0d":
+            # Trying to add ICQ contact to an AIM list
+            self.errorMessage("Trying to add ICQ contact to an AIM list")
+        elif snac[5][pos:pos+2] == "\00\x0e":
+            # requires authorization
+            log.msg("Authorization needed... requesting")
+            self.sendAuthorizationRequest(item.name, "Please authorize me")
+            item.authorizationRequestSent = True
+            item.authorized = False
+            self.addItemSSI(item)
 
     def modifyItemSSI(self, item, groupID = None, buddyID = None):
         if groupID is None:
@@ -1057,17 +1268,10 @@ class BOSConnection(SNACBased):
                 buddyID = item.group.findIDFor(item)
             else:
                 buddyID = 0
-        return self.sendSNAC(0x13,0x09, item.oscarRep(groupID, buddyID))
+        return self.sendSNAC(0x13,0x09, item.oscarRep())
 
-    def delItemSSI(self, item, groupID = None, buddyID = None):
-        if groupID is None:
-            if isinstance(item, SSIGroup):
-                groupID = 0
-            else:
-                groupID = item.group.group.findIDFor(item.group)
-        if buddyID is None:
-            buddyID = item.group.findIDFor(item)
-        return self.sendSNAC(0x13,0x0A, item.oscarRep(groupID, buddyID))
+    def delItemSSI(self, item):
+        return self.sendSNAC(0x13,0x0A, item.oscarRep())
 
     def endModifySSI(self):
         self.sendSNACnr(0x13,0x12,'')
@@ -1094,6 +1298,30 @@ class BOSConnection(SNACBased):
         tlvs = TLV(3,'text/aolrtf; charset="us-ascii"') + \
                TLV(4,away or '')
         self.sendSNACnr(0x02, 0x04, tlvs)
+
+    def sendAuthorizationRequest(self, uin, authString):
+        """
+        send an authorization request
+        """
+        packet = struct.pack("b", len(uin))
+        packet += uin
+        packet += struct.pack(">H", len(authString))
+        packet += authString
+        packet += struct.pack("H", 0x00)
+        log.msg("sending authorization request to %s"%uin)
+        self.sendSNACnr(0x13, 0x18, packet)
+
+    def sendAuthorizationRespons(self, uin, success, responsString):
+        """
+        send an authorization respons
+        """
+        packet  = struct.pack("b", len(uin)) + uin
+        if success:
+            packet += struct.pack("b", 1)
+        else:
+            packet += struct.pack("b", 0)
+        packet += struct.pack(">H", len(responsString)) + responsString
+        self.sendSNACnr(0x13, 0x1a, packet)
 
     def setICQStatus(self, status):
         """
@@ -1274,6 +1502,30 @@ class BOSConnection(SNACBased):
         """
         pass
 
+    def gotAuthorizationRespons(self, uin, success):
+        """
+        called when a user sends an authorization respons
+        """
+        pass
+
+    def gotAuthorizationRequest(self, uin):
+        """
+        called when a user want's an authorization
+        """
+        pass
+
+    def youWereAdded(self, uin):
+        """
+        called when a user added you to contact list
+        """
+        pass
+
+    def buddyAdded(self, uin):
+        """
+        called when a buddy is added
+        """
+	pass
+
     def updateBuddy(self, user):
         """
         called when a buddy changes status, with the OSCARUser for that buddy.
@@ -1306,6 +1558,12 @@ class BOSConnection(SNACBased):
         called when a typing notification occurs.
         type can be "begin", "idle", or "finish".
         user is an OSCARUser.
+        """
+        pass
+
+    def errorMessage(self, message):
+        """
+        called when an error message should be signaled
         """
         pass
 
