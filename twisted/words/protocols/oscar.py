@@ -870,7 +870,7 @@ class BOSConnection(SNACBased):
                         self.receiveMessage(user, multiparts, flags)
                 elif (type == 0x42):
                     # End of offline messages
-	            reqdata = '\x08\x00'+struct.pack("I",int(self.username))+'\x3e\x00\x02\x00'
+	            reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3e\x00\x02\x00'
                     tlvs = TLV(0x01, reqdata)
                     self.sendSNAC(0x15, 0x02, tlvs)
                 elif (type == 0x7da):
@@ -1189,7 +1189,7 @@ class BOSConnection(SNACBased):
         """
         request offline messages
         """
-	reqdata = '\x08\x00'+struct.pack("I",int(self.username))+'\x3c\x00\x02\x00'
+	reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3c\x00\x02\x00'
         tlvs = TLV(0x01, reqdata)
         return self.sendSNAC(0x15, 0x02, tlvs)
 
