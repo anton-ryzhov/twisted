@@ -1061,6 +1061,22 @@ class BOSConnection(SNACBased):
                TLV(4,away or '')
         self.sendSNACnr(0x02, 0x04, tlvs)
 
+    def setICQStatus(self, status):
+        """
+        set status of user: online, away, xa, dnd or chat
+        """
+        if status == "away":
+            icqStatus = 0x01
+        elif status == "dnd":
+            icqStatus = 0x02
+        elif status == "xa":
+            icqStatus = 0x04
+        elif status == "chat":
+            icqStatus = 0x20
+        else:
+            icqStatus = 0x00
+        self.sendSNACnr(0x01, 0x1e, TLV(0x06, struct.pack(">L", icqStatus)))
+
     def setIdleTime(self, idleTime):
         """
         set our idle time.  don't call more than once with a non-0 idle time.
