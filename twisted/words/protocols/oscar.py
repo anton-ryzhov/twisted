@@ -757,10 +757,10 @@ class BOSConnection(SNACBased):
         snac[3]=snac[3][2:]
         for i in range(count):
               info=struct.unpack('!HLLLLLLL',snac[3][:30])
-              print "class ID: "+str(info[0])
+              #print "class ID: "+str(info[0])
               self.outRateInfo[info[0]]={'window':info[1],'clear':info[2],'currentrate':info[6],'lasttime':time.time(),'maxrate':info[7]}
               snac[3]=snac[3][35:]
-              print len(snac[3])
+              #print len(snac[3])
         #print self.outRateInfo
         while (len(snac[3]) > 0):
               info=struct.unpack('!HH',snac[3][:4])
@@ -1128,8 +1128,8 @@ class BOSConnection(SNACBased):
                 pass
             elif (k == 3):
                 pass
-            else:
-                print str(k)+":::"+str(v)+"\n"
+            #else:
+            #    print str(k)+":::"+str(v)+"\n"
 
     def _cbRequestSelfInfo(self, snac, d):
         d.callback(self.parseUser(snac[5]))
@@ -1471,8 +1471,8 @@ class BOSConnection(SNACBased):
         tlvs = TLV(0x01, reqdata)
         return self.sendSNAC(0x15, 0x02, tlvs)
 
-    def _cbreqOffline(self, snac):
-        print "arg"
+    #def _cbreqOffline(self, snac):
+        #print "arg"
 
     def sendTypingNotification(self, user, type):
         #if user.
