@@ -262,6 +262,8 @@ class OscarConnection(protocol.Protocol):
 
     def sendFLAP(self,data,channel = 0x02):
         header="!cBHH"
+	if (not hasattr(self, "seqnum")):
+		self.seqnum = 0
         self.seqnum=(self.seqnum+1)%0xFFFF
         seqnum=self.seqnum
         head=struct.pack(header,'*', channel,
@@ -1009,7 +1011,11 @@ class BOSConnection(SNACBased):
             self.requestCallbacks[snac[4]] = d
             d.addCallback(self._cbRequestSSI, (revision, groups, permit, deny, permitMode, visibility))
             return d
-        return (groups[0].users,permit,deny,permitMode,visibility,timestamp,revision)
+        if (len(groups) <= 0):
+		gusers = None
+	else:
+		gusers = groups[0].users
+        return (gusers,permit,deny,permitMode,visibility,timestamp,revision)
 
     def activateSSI(self):
         """
