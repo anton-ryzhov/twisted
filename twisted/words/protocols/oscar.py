@@ -24,6 +24,7 @@ import types
 import re
 import binascii
 import threading
+import socks5, sockserror
 
 import countrycodes
 
@@ -543,6 +544,8 @@ class BOSConnection(SNACBased):
         self.profile = None
         self.awayMessage = None
         self.services = {}
+        self.socksProxyServer = None
+        self.socksProxyPort = None
 
         if not self.capabilities:
             self.capabilities = [CAP_CHAT]
@@ -752,11 +755,17 @@ class BOSConnection(SNACBased):
         service = struct.unpack('!H',tlvs[0x0d])[0]
         ip = tlvs[5]
         cookie = tlvs[6]
-        #c = serviceClasses[service](self, cookie, d)
-        c = protocol.ClientCreator(reactor, serviceClasses[service], self, cookie, d)
+
         def addService(x):
             self.services[service] = x
-        c.connectTCP(ip, 5190).addCallback(addService)
+
+        #c = serviceClasses[service](self, cookie, d)
+        if self.socksProxyServer and self.socksProxyPort:
+            c = protocol.ProxyClientCreator(reactor, serviceClasses[service], self, cookie, d)
+            c.connectSocks5Proxy(ip, 5190, self.socksProxyServer, int(self.socksProxyPort), "BOSCONN").addCallback(addService)
+        else:
+            c = protocol.ClientCreator(reactor, serviceClasses[service], self, cookie, d)
+            c.connectTCP(ip, 5190).addCallback(addService)
         #self.services[service] = c
 
     def oscar_01_07(self,snac):
@@ -1807,6 +1816,7 @@ class OscarAuthenticator(OscarConnection):
             i=snac[5].find("\000")
             snac[5]=snac[5][i:]
         tlvs=readTLVs(snac[5])
+        log.msg(tlvs)
         if tlvs.has_key(6):
             self.cookie=tlvs[6]
             server,port=string.split(tlvs[5],":")
