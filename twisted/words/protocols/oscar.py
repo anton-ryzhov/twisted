@@ -499,9 +499,9 @@ class SNACBased(OscarConnection):
 
         #print "CHRIS: "
         #print info
-        if (code==3):
-               import sys
-               sys.exit()
+        #if (code==3):
+        #       import sys
+        #       sys.exit()
 
     def oscar_01_18(self,snac):
         """
