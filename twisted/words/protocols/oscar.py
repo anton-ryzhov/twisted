@@ -226,6 +226,7 @@ class SSIGroup:
 class SSIBuddy:
     def __init__(self, name, groupID, buddyID, tlvs = {}):
         self.name = name
+        self.nick = name
         self.groupID = groupID
         self.buddyID = buddyID
         self.tlvs = tlvs
@@ -234,6 +235,8 @@ class SSIBuddy:
         for k,v in tlvs.items():
             if k == 0x0066: # awaiting authorization
                 self.authorized = False
+            elif k == 0x0131: # buddy nick
+                self.nick = v
             elif k == 0x013c: # buddy comment
                 self.buddyComment = v
             elif k == 0x013d: # buddy alerts
