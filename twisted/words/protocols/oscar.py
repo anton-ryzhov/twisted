@@ -14,6 +14,8 @@ from __future__ import nested_scopes
 from twisted.internet import reactor, main, defer, protocol
 from twisted.python import log
 
+from scheduler import Scheduler
+
 import struct
 import md5
 import string
@@ -149,14 +151,7 @@ class OSCARUser:
                 caps=[]
                 while v:
                     c=v[:16]
-                    if c==CAP_ICON: caps.append("icon")
-                    elif c==CAP_IMAGE: caps.append("image")
-                    elif c==CAP_VOICE: caps.append("voice")
-                    elif c==CAP_CHAT: caps.append("chat")
-                    elif c==CAP_GET_FILE: caps.append("getfile")
-                    elif c==CAP_SEND_FILE: caps.append("sendfile")
-                    elif c==CAP_SEND_LIST: caps.append("sendlist")
-                    elif c==CAP_GAMES: caps.append("games")
+                    if CAPS.has_key(c): caps.append(CAPS[c])
                     else: caps.append(("unknown",c))
                     v=v[16:]
                 caps.sort()
@@ -300,9 +295,8 @@ class OscarConnection(protocol.Protocol):
 #            logPacketData(head+str(data))
 
     def readFlap(self):
-        header="!cBHH"
         if len(self.buf)<6: return
-        flap=struct.unpack(header,self.buf[:6])
+        flap=struct.unpack("!BBHH",self.buf[:6])
         if len(self.buf)<6+flap[3]: return
         data,self.buf=self.buf[6:6+flap[3]],self.buf[6+flap[3]:]
         return [flap[1],data]
@@ -353,9 +347,7 @@ class SNACBased(OscarConnection):
         self.lastID=0
         self.supportedFamilies = ()
         self.requestCallbacks={} # request id:Deferred
-        self.outRateTable={}
-        self.outRateInfo={}
-        self.outRateLock=threading.Lock()
+        self.scheduler=Scheduler(self.sendFLAP)
 
     def sendSNAC(self,fam,sub,data,flags=[0,0]):
         """
@@ -366,19 +358,11 @@ class SNACBased(OscarConnection):
         d = defer.Deferred()
         d.reqid = reqid
 
-        #d.addErrback(self._ebDeferredError,fam,sub,data) # XXX for testing
+        d.addErrback(self._ebDeferredError,fam,sub,data) # XXX for testing
 
         self.requestCallbacks[reqid] = d
-
-        #self.outRateLock.acquire()
-        #delay=self.calcDelay(fam,sub)
-        #time.sleep(delay) 
-        #self.sendFLAP(SNAC(fam,sub,reqid,data))
-        #self.updateRate(fam,sub)
-        #self.outRateLock.release()
-        delay=self.reserveDelay(fam,sub)
         snac=SNAC(fam,sub,reqid,data)
-        threading.Timer(delay,self.sendFLAP,[snac]).start()
+        self.scheduler.enqueue(fam,sub,snac)
         return d
 
     def _ebDeferredError(self, error, fam, sub, data):
@@ -390,57 +374,8 @@ class SNACBased(OscarConnection):
         """
         send a snac, but don't bother adding a deferred, we don't care.
         """
-        #self.outRateLock.acquire()
-        #delay=self.calcDelay(fam,sub)
-        #time.sleep(delay)           
-        #self.sendFLAP(SNAC(fam,sub,0x10000*fam+sub,data))
-        #self.updateRate(fam,sub)
-        #self.outRateLock.release()
-        delay=self.reserveDelay(fam,sub)
         snac=SNAC(fam,sub,0x10000*fam+sub,data)
-        threading.Timer(delay,self.sendFLAP,[snac]).start()
-
-    def reserveDelay(self,fam,sub):
-        self.outRateLock.acquire()
-        delay=self.calcDelay(fam,sub)
-        self.updateRate(fam,sub,delay)
-        self.outRateLock.release()
-        return delay
-
-    def calcDelay(self,fam,sub):
-        if (not self.outRateTable.has_key(str(fam)+str(sub))):
-            #print "no rateclass for "+ str(fam)+","+str(sub)
-            return 0
-        rateclass=self.outRateTable[str(fam)+str(sub)]
-        target=self.outRateInfo[rateclass]['clear']
-        window=self.outRateInfo[rateclass]['window']
-        lasttime=self.outRateInfo[rateclass]['lasttime']
-        currentrate=self.outRateInfo[rateclass]['currentrate']
-        nextTime=(window*target-(window-1)*currentrate)/1000.+lasttime
-        now=time.time()
-        if (nextTime < now):
-            return 0
-        else:
-            #print "delay "+ str(nextTime-now)
-            return (nextTime-now)                        
-
-    def updateRate(self,fam,sub,delay=0):
-        if (not self.outRateTable.has_key(str(fam)+str(sub))):
-            return
-        rateclass=self.outRateTable[str(fam)+str(sub)]
-        window=self.outRateInfo[rateclass]['window']
-        lasttime=self.outRateInfo[rateclass]['lasttime']
-        currentrate=self.outRateInfo[rateclass]['currentrate']
-        maxrate=self.outRateInfo[rateclass]['maxrate']
-        now=time.time()+delay
- 
-        newrate=(window-1.)/window * currentrate + 1./window * (now-lasttime)*1000
-        if (newrate > maxrate):
-            newrate=maxrate
-        #print "rateclass "+str(rateclass)+" newrate "+str(newrate)
-
-        self.outRateInfo[rateclass]['lasttime']=now
-        self.outRateInfo[rateclass]['currentrate']=newrate
+        self.scheduler.enqueue(fam,sub,snac)
 
     def oscar_(self,data):
         self.sendFLAP("\000\000\000\001"+TLV(6,self.cookie), 0x01)
@@ -491,17 +426,9 @@ class SNACBased(OscarConnection):
         limit=info[5]
         disconnect=info[6]
         current=info[7]
-        maximum=info[8]
+        maxrate=info[8]
 
-        self.outRateLock.acquire()
-        self.outRateInfo[rateclass]['window']=window
-        self.outRateInfo[rateclass]['clear']=clear
-        self.outRateInfo[rateclass]['currentrate']=current
-        self.outRateInfo[rateclass]['maxrate']=maximum
-        self.outRateLock.release()
-
-        #print "CHRIS: "
-        #print info
+        self.scheduler.setStat(rateclass,window=window,clear=clear,alert=alert,limit=limit,disconnect=disconnect,rate=current,maxrate=maxrate)
         #if (code==3):
         #       import sys
         #       sys.exit()
@@ -570,183 +497,187 @@ class BOSConnection(SNACBased):
             return u, rest
 
     def parseMoreInfo(self, data):
-        result = ord(data[0])
-        if result != 0xa:
-            return
-        pos = 0
-        homepagelen = struct.unpack("<H", data[4:6])[0]
-        pos = 6+homepagelen
-        homepage = data[6:pos]
-        year = struct.unpack("<H", data[pos:pos+2])[0]
-        month = ord(data[pos+2])
-        day = ord(data[pos+3])
+        # why did i have this here and why did dsh remove it
+        #result = ord(data[0])
+        #if result != 0xa:
+        #    return
+
+        pos = 3
+        homepagelen = struct.unpack("<H", data[pos:pos+2])[0]
+        pos += 2
+        homepage = data[pos:pos+homepagelen-1]
+
+        pos += homepagelen
+        year  = struct.unpack("<H", data[pos:pos+2])[0]
+        month = struct.unpack("B", data[pos+2:pos+3])[0]
+        day   = struct.unpack("B", data[pos+3:pos+4])[0]
         if year and month and day:
             birth = "%04d-%02d-%02d"%(year,month,day)
         else:
             birth = ""
+ 
         return homepage,birth
 
     def parseWorkInfo(self, data):
-        result = ord(data[0])
-        if result != 0xa:
-            return
+        #result = ord(data[0])
+        #if result != 0xa:
+        #    return
 
-        pos = 1
+        pos = 0
         citylen = struct.unpack("<H",data[pos:pos+2])[0]
         pos += 2
-        city = data[pos:pos+citylen]
-        pos += citylen
+        city = data[pos:pos+citylen-1]
 
+        pos += citylen
         statelen = struct.unpack("<H",data[pos:pos+2])[0]
         pos += 2
-        state = data[pos:pos+statelen]
+        state = data[pos:pos+statelen-1]
+
         pos += statelen
-        
         phonelen = struct.unpack("<H",data[pos:pos+2])[0]
         pos += 2
-        phone = data[pos:pos+phonelen]
-        pos += phonelen
+        phone = data[pos:pos+phonelen-1]
 
+        pos += phonelen
         faxlen = struct.unpack("<H",data[pos:pos+2])[0]
         pos += 2
-        fax = data[pos:pos+faxlen]
-        pos += faxlen
+        fax = data[pos:pos+faxlen-1]
 
+        pos += faxlen
         addresslen = struct.unpack("<H",data[pos:pos+2])[0]
         pos += 2
-        address = data[pos:pos+addresslen]
-        pos += addresslen
+        address = data[pos:pos+addresslen-1]
 
+        pos += addresslen
         ziplen = struct.unpack("<H",data[pos:pos+2])[0]
         pos += 2
-        zip = data[pos:pos+ziplen]
-        pos += ziplen
+        zip = data[pos:pos+ziplen-1]
 
+        pos += ziplen
         countrycode = struct.unpack(">H",data[pos:pos+2])[0]
         if countrycode in countrycodes.countryCodes:
             country = countrycodes.countryCodes[countrycode]
         else:
             country = ""
-        pos += 2
 
+        pos += 2
         companylen = struct.unpack("<H",data[pos:pos+2])[0]
         pos += 2
-        company = data[pos:pos+companylen]
+        company = data[pos:pos+companylen-1]
+
         pos += companylen
-        
         departmentlen = struct.unpack("<H",data[pos:pos+2])[0]
         pos += 2
-        department = data[pos:pos+departmentlen]
-        pos += departmentlen
+        department = data[pos:pos+departmentlen-1]
 
+        pos += departmentlen
         positionlen = struct.unpack("<H",data[pos:pos+2])[0]
         pos += 2
-        position = data[pos:pos+positionlen]
-        pos += departmentlen
+        position = data[pos:pos+positionlen-1]
 
         return city,state,phone,fax,address,zip,country,company,department,position
 
     def parseNotesInfo(self, data):
-        result = ord(data[0])
-        if result != 0xa:
-            return
+        #result = ord(data[0])
+        #if result != 0xa:
+        #    return
 
-        noteslen = struct.unpack("<H", data[1:3])[0]
-        notes = data[3:3+noteslen]
+        noteslen = struct.unpack("<H", data[0:2])[0]
+        notes = data[2:2+noteslen-1]
         return notes
 
     def parseFullInfo(self, data):
-	result = ord(data[0])
-        if result != 0xa:
-            return
-	pos = 0
-	nicklen = ord(data[pos+1])
-	pos = pos + 2
-	nick = data[2+1:pos+nicklen]
+	#result = ord(data[0])
+        #if result != 0xa:
+        #    return
+        pos = 0
+        nicklen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        nick = data[pos:pos + nicklen - 1]
 
-	pos = pos + nicklen
-	firstlen = ord(data[pos+1])
-	pos = pos + 2
-	first = data[pos+1:pos+firstlen]
+        pos += nicklen
+        firstlen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        first = data[pos:pos + firstlen - 1]
 
-	pos = pos + firstlen
-	lastlen = ord(data[pos+1])
-	pos = pos + 2
-	last = data[pos+1:pos+lastlen]
+        pos += firstlen
+        lastlen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        last = data[pos:pos + lastlen - 1]
 
-	pos = pos + lastlen
-	emaillen = ord(data[pos+1])
-	pos = pos + 2
-	email = data[pos+1:pos+emaillen]
+        pos += lastlen
+        emaillen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        email = data[pos:pos + emaillen - 1]
 
-        pos = pos + emaillen
-        homeCitylen = ord(data[pos+1])
-        pos = pos + 2
-        homeCity = data[pos+1:pos+homeCitylen]
+        pos += emaillen
+        homeCitylen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        homeCity = data[pos:pos + homeCitylen - 1]
 
-        pos = pos + homeCitylen
-        homeStatelen = ord(data[pos+1])
-        pos = pos + 2
-        homeState = data[pos+1:pos+homeStatelen]
+        pos += homeCitylen
+        homeStatelen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        homeState = data[pos:pos + homeStatelen - 1]
 
-        pos = pos + homeStatelen
-        homePhonelen = ord(data[pos+1])
-        pos = pos + 2
-        homePhone = data[pos+1:pos+homePhonelen]
+        pos += homeStatelen
+        homePhonelen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        homePhone = data[pos:pos + homePhonelen - 1]
 
-        pos = pos + homePhonelen
-        homeFaxlen = ord(data[pos+1])
-        pos = pos + 2
-        homeFax = data[pos+1:pos+homeFaxlen]
+        pos += homePhonelen
+        homeFaxlen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        homeFax = data[pos:pos + homeFaxlen - 1]
 
-        pos = pos + homeFaxlen
-        homeAddresslen = ord(data[pos+1])
-        pos = pos + 2
-        homeAddress = data[pos+1:pos+homeAddresslen]
+        pos += homeFaxlen
+        homeAddresslen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        homeAddress = data[pos:pos + homeAddresslen - 1]
 
-        pos = pos + homeAddresslen
-        cellPhonelen = ord(data[pos+1])
-        pos = pos + 2
-        cellPhone = data[pos+1:pos+cellPhonelen]
-        
-        pos = pos + cellPhonelen
-        homeZiplen = ord(data[pos+1])
-        pos = pos + 2
-        homeZip = data[pos+1:pos+homeZiplen]
+        pos += homeAddresslen
+        cellPhonelen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        cellPhone = data[pos:pos + cellPhonelen - 1]
 
-        homeCountrycode = struct.unpack(">H", data[pos+homeZiplen:pos+homeZiplen+2])[0]
+        pos += cellPhonelen
+        homeZiplen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        homeZip = data[pos:pos + homeZiplen - 1]
+
+        pos += homeZiplen
+        homeCountrycode = struct.unpack("<H", data[pos:pos+2])[0]
+
         if homeCountrycode in countrycodes.countryCodes:
             homeCountry = countrycodes.countryCodes[homeCountrycode]
         else:
             homeCountry = ""
 
-	#print str(result)+" "+str(nicklen)+" ["+nick+"] "+str(firstlen)+" ["+first+"] "+str(lastlen)+" ["+last+"] "+str(emaillen)+" ["+email+"]\n"
 	return nick,first,last,email,homeCity,homeState,homePhone,homeFax,homeAddress,cellPhone,homeZip,homeCountry
 
     def parseBasicInfo(self,data):
-	result = ord(data[0])
+	#result = ord(data[0])
 
 	pos = 0
-	nicklen = ord(data[pos+1])
-	pos = pos + 2
-	nick = data[2+1:pos+nicklen]
+        nicklen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        nick = data[pos:pos + nicklen - 1]
 
-	pos = pos + nicklen
-	firstlen = ord(data[pos+1])
-	pos = pos + 2
-	first = data[pos+1:pos+firstlen]
+        pos += nicklen
+        firstlen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        first = data[pos:pos + firstlen - 1]
 
-	pos = pos + firstlen
-	lastlen = ord(data[pos+1])
-	pos = pos + 2
-	last = data[pos+1:pos+lastlen]
+        pos += firstlen
+        lastlen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        last = data[pos:pos + lastlen - 1]
 
-	pos = pos + lastlen
-	emaillen = ord(data[pos+1])
-	pos = pos + 2
-	email = data[pos+1:pos+emaillen]
+        pos += lastlen
+        emaillen = struct.unpack('<H', data[pos:pos+2])[0]
+        pos += 2
+        email = data[pos:pos + emaillen - 1]
 
-	#print str(result)+" "+str(nicklen)+" ["+nick+"] "+str(firstlen)+" ["+first+"] "+str(lastlen)+" ["+last+"] "+str(emaillen)+" ["+email+"]\n"
 	return nick,first,last,email
 
     def oscar_01_05(self, snac, d = None):
@@ -778,25 +709,26 @@ class BOSConnection(SNACBased):
         self.outRateInfo={}
         self.outRateTable={}
         count=struct.unpack('!H',snac[3][0:2])[0]
-        #print 'count: '+str(count)
         snac[3]=snac[3][2:]
         for i in range(count):
               info=struct.unpack('!HLLLLLLL',snac[3][:30])
-              #print "class ID: "+str(info[0])
-              self.outRateInfo[info[0]]={'window':info[1],'clear':info[2],'currentrate':info[6],'lasttime':time.time(),'maxrate':info[7]}
+              classid=info[0]
+              window=info[1]
+              clear=info[2]
+              currentrate=info[6]
+              lasttime=time.time()
+              maxrate=info[7]
+              self.scheduler.setStat(classid,window=window,clear=clear,rate=currentrate,lasttime=lasttime,maxrate=maxrate)
               snac[3]=snac[3][35:]
-              #print len(snac[3])
-        #print self.outRateInfo
+
         while (len(snac[3]) > 0):
               info=struct.unpack('!HH',snac[3][:4])
-              #print "class ID: "+str(info[0])+" count: "+str(info[1])
-              #print "reqiring "+str(info[1]*4)+" bytes out of "+str(len(snac[3][4:]))
-              classID=info[0]
+              classid=info[0]
               count=info[1]
               info=struct.unpack('!'+str(2*count)+'H',snac[3][4:4+count*4])
               while (len(info)>0):
-                   snacid=str(info[0])+str(info[1])
-                   self.outRateTable[snacid]=classID
+                   fam,sub=str(info[0]),str(info[1])
+                   self.scheduler.bindIntoClass(fam,sub,classid)
                    info=info[2:]
               snac[3]=snac[3][4+count*4:]             
 
@@ -824,7 +756,10 @@ class BOSConnection(SNACBased):
         """
         MOTD
         """
-        pass # we don't care for now
+        motd_msg_type = struct.unpack('!H', snac[3][:2])[0]
+        if MOTDS.has_key(motd_msg_type):
+            tlvs = readTLVs(snac[3][2:])
+            motd_msg_string = tlvs[0x0b]
 
     def oscar_02_03(self, snac):
         """
@@ -1088,8 +1023,12 @@ class BOSConnection(SNACBased):
         ask for the OSCARUser for ourselves
         """
         d = defer.Deferred()
+        d.addErrback(self._ebDeferredSelfInfoError)
         self.sendSNAC(0x01, 0x0E, '').addCallback(self._cbRequestSelfInfo, d)
         return d
+
+    def _ebDeferredSelfInfoError(self, error):
+        log.msg('ERROR IN SELFINFO DEFERRED %s' % error)
 
     def oscar_15_03(self, snac):
         """
@@ -1098,22 +1037,16 @@ class BOSConnection(SNACBased):
         tlvs = readTLVs(snac[3])
         for k, v in tlvs.items():
             if (k == 1):
-                targetuin = struct.unpack('<I',v[2:6])[0]
-                type = struct.unpack('<H',v[6:8])[0]
+                targetuin,type = struct.unpack('<IH',v[2:8])
                 if (type == 0x41):
                     # Offline message
                     senderuin = struct.unpack('<I',v[10:14])[0]
                     #print "senderuin: "+str(senderuin)+"\n"
-                    year = struct.unpack('<H',v[14:16])[0]
-                    month = struct.unpack('b',v[16])[0]
-                    day = struct.unpack('b',v[17])[0]
-                    hour = struct.unpack('b',v[18])[0]
-                    minute = struct.unpack('b',v[19])[0]
-                    messagetype = struct.unpack('b',v[20])[0]
-                    messageflags = struct.unpack('b',v[21])[0]
-                    messagelen = struct.unpack('<H',v[22:24])[0]
-                    message = [str(v[24:24+messagelen-2])]
-                    #print "OFFLINE: "+str(senderuin)+" "+str(year)+"-"+str(month)+"-"+str(day)+" "+str(hour)+":"+str(minute)+" "+str(messagetype)+" "+str(messageflags)+" "+str(messagelen)+" "+message[0]+"\n"
+                    msg_date = str( "%4d-%02d-%02d %02d:%02d"
+                                    % struct.unpack('<HBBBB', v[14:20]) )
+                    messagetype, messageflags,messagelen = struct.unpack('<BBH',v[20:24])
+                    message = [ str( v[24:24+messagelen-1] )
+                                + "\n\n/sent " + msg_date ]
 
                     if (messagelen > 0):
                         flags = []
@@ -1130,18 +1063,17 @@ class BOSConnection(SNACBased):
                 elif (type == 0x7da):
                     # Meta information
                     # print [ "%x" % ord(n) for n in v ]
-                    sequenceNumber = struct.unpack("<H",v[8:10])[0]
-                    rType = struct.unpack("<H",v[10:12])[0]
-                    if ord(v[12]) == 0x0a:
+                    sequenceNumber,rType,success = struct.unpack("<HHB",v[8:13])
+                    if success == 0x0a:
                         if rType == 0xc8:
                             # SNAC(15,03)/07DA/00C8 | META_BASIC_USERINFO
                             # http://iserverd1.khstu.ru/oscar/snac_15_03_07da_00c8.html
-                            nick,first,last,email,homeCity,homeState,homePhone,homeFax,homeAddress,cellPhone,homeZip,homeCountry = self.parseFullInfo(v[12:])
+                            nick,first,last,email,homeCity,homeState,homePhone,homeFax,homeAddress,cellPhone,homeZip,homeCountry = self.parseFullInfo(v[13:])
                             self.gotUserInfo(sequenceNumber, rType, [nick,first,last,email,homeCity,homeState,homePhone,homeFax,homeAddress,cellPhone,homeZip,homeCountry])
                         elif rType == 0xdc:
                             # SNAC(15,03)/07DA/00DC | META_MORE_USERINFO
                             # http://iserverd1.khstu.ru/oscar/snac_15_03_07da_00dc.html
-                            homepage,birth = self.parseMoreInfo(v[12:])
+                            homepage,birth = self.parseMoreInfo(v[13:])
                             self.gotUserInfo(sequenceNumber, rType, [homepage,birth])
                         elif rType == 0xeb or rType == 0x10e or rType == 0xf0 or rType == 0xfa:
                             # for now we don't care about these
@@ -1149,12 +1081,12 @@ class BOSConnection(SNACBased):
                         elif rType == 0xd2:
                             # SNAC(15,03)/07DA/00D2 | META_WORK_USERINFO
                             # http://iserverd1.khstu.ru/oscar/snac_15_03_07da_00d2.html
-                            city,state,phone,fax,address,zip,country,company,department,position = self.parseWorkInfo(v[12:])
+                            city,state,phone,fax,address,zip,country,company,department,position = self.parseWorkInfo(v[13:])
                             self.gotUserInfo(sequenceNumber, rType, [city,state,phone,fax,address,zip,country,company,department,position])
                         elif rType == 0xe6:
                             # SNAC(15,03)/07DA/00E6 | META_NOTES_USERINFO
                             # http://iserverd1.khstu.ru/oscar/snac_15_03_07da_00e6.html
-                            usernotes = self.parseNotesInfo(v[12:])
+                            usernotes = self.parseNotesInfo(v[13:])
                             self.gotUserInfo(sequenceNumber, rType, [usernotes])
                     else:
                         self.gotUserInfo(sequenceNumber, 0xffff, None)
@@ -1234,12 +1166,16 @@ class BOSConnection(SNACBased):
             d = defer.Deferred()
             self.requestCallbacks[snac[4]] = d
             d.addCallback(self._cbRequestSSI, (revision, groups, permit, deny, permitMode, visibility))
+            d.addErrback(self._ebDeferredRequestSSIError, revision, groups, permit, deny, permitMode, visibility)
             return d
         if (len(groups) <= 0):
 		gusers = None
 	else:
 		gusers = groups[0].users
         return (gusers,permit,deny,permitMode,visibility,timestamp,revision)
+
+    def _ebDeferredRequestSSIError(self, error, revision, groups, permit, deny, permitMode, visibility):
+        log.msg('ERROR IN REQUEST SSI DEFERRED %s' % error)
 
     def activateSSI(self):
         """
@@ -1402,7 +1338,7 @@ class BOSConnection(SNACBased):
             charSet = 0
             if 'unicode' in part[1:]:
                 charSet = 2
-                part[0] = part[0].encode('utf-8', 'replace')
+                part[0] = part[0].encode('utf-16be', 'replace')
             elif 'iso-8859-1' in part[1:]:
                 charSet = 3
                 part[0] = part[0].encode('iso-8859-1', 'replace')
@@ -1437,10 +1373,14 @@ class BOSConnection(SNACBased):
         """
         if wantCallback:
             d = defer.Deferred()
+            d.addErrback(self._ebDeferredConnectServiceError)
             self.sendSNAC(0x01,0x04,struct.pack('!H',service) + extraData).addCallback(self._cbConnectService, d)
             return d
         else:
             self.sendSNACnr(0x01,0x04,struct.pack('!H',service))
+
+    def _ebDeferredConnectServiceError(self, error):
+        log.msg('ERROR IN CONNECT SERVICE DEFERRED %s' % error)
 
     def _cbConnectService(self, snac, d):
         d.arm()
@@ -1454,9 +1394,12 @@ class BOSConnection(SNACBased):
             return self.services[SERVICE_CHATNAV].createChat(shortName)
         else:
             d = defer.Deferred()
+            d.addErrback(self._ebDeferredCreateChatError)
             self.connectService(SERVICE_CHATNAV,1).addCallback(lambda s:d.arm() or s.createChat(shortName).chainDeferred(d))
             return d
 
+    def _ebDeferredCreateChatError(self, error):
+        log.msg('ERROR IN CREATE CHAT DEFERRED %s' % error)
 
     def joinChat(self, exchange, fullName, instance):
         """
@@ -1506,7 +1449,7 @@ class BOSConnection(SNACBased):
         """
 	reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3c\x00\x02\x00'
         tlvs = TLV(0x01, reqdata)
-        return self.sendSNAC(0x15, 0x02, tlvs)
+        return self.sendSNACnr(0x15, 0x02, tlvs)
 
     #def _cbreqOffline(self, snac):
         #print "arg"
@@ -1521,7 +1464,7 @@ class BOSConnection(SNACBased):
     def _cbGetAway(self, snac):
         user, rest = self.parseUser(snac[5],1)
         tlvs = readTLVs(rest)
-        return tlvs.get(0x04,None) # return None if there is no away message
+        return [tlvs.get(0x03,None),tlvs.get(0x04,None)] # return None if there is no away message
 
     #def acceptSendFileRequest(self,
 
@@ -1657,6 +1600,7 @@ class ChatNavService(OSCARService):
         0x01:(3, 0x0010, 0x059b),
         0x0d:(1, 0x0010, 0x059b)
     }
+
     def oscar_01_07(self, snac):
         # rate info
         self.sendSNACnr(0x01, 0x08, '\000\001\000\002\000\003\000\004\000\005')
@@ -1667,6 +1611,7 @@ class ChatNavService(OSCARService):
 
     def getChatInfo(self, exchange, name, instance):
         d = defer.Deferred()
+        d.addErrback(self._ebDeferredRequestSSIError)
         self.sendSNAC(0x0d,0x04,struct.pack('!HB',exchange,len(name)) + \
                       name + struct.pack('!HB',instance,2)). \
             addCallback(self._cbGetChatInfo, d)
@@ -1917,6 +1862,93 @@ CAP_UTF = '\x09\x46\x13\x4E\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
 # Supports RTF messages
 CAP_RTF = '\x97\xB1\x27\x51\x24\x3C\x43\x34\xAD\x22\xD6\xAB\xF7\x3F\x14\x92'
 
+CAPS = dict( [
+    (CAP_ICON, 'icon'),
+    (CAP_VOICE, 'voice'),
+    (CAP_IMAGE, 'image'),
+    (CAP_CHAT, 'chat'),
+    (CAP_GET_FILE, 'getfile'),
+    (CAP_SEND_FILE, 'sendfile'),
+    (CAP_SEND_LIST, 'sendlist'),
+    (CAP_GAMES, 'games'),
+    (CAP_SERV_REL, 'serv_rel'),
+    (CAP_CROSS_CHAT, 'cross_chat'),
+    (CAP_UTF, 'unicode'),
+    (CAP_RTF, 'rtf'),
+
+    # From gaim-1.3.0/src/protocols/oscar/locate.c:
+
+    ('\x09\x46\x00\x00\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'ichat'),
+
+    ('\x09\x46\x00\x01\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'secureim'),
+
+    ('\x09\x46\x01\x00\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'video'),
+
+    # "Live Video" support in Windows AIM 5.5.3501 and newer
+    ('\x09\x46\x01\x01\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'live_video'),
+
+    # "Camera" support in Windows AIM 5.5.3501 and newer
+    ('\x09\x46\x01\x02\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'camera'),
+
+    # In Windows AIM 5.5.3501 and newer
+    ('\x09\x46\x01\x03\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'generecunknown'),
+
+    # In iChatAV (version numbers...?)
+    ('\x09\x46\x01\x05\x4c\x7f\x11\xd1\x82\x22\x44\x45\x45\x53\x54\x00',
+     'ichatav'),
+
+    # Not really sure about this one.  In an email from 26 Sep 2003,
+    # Matthew Sachs suggested that, "this * is probably the capability
+    # for the SMS features."
+    ('\x09\x46\x01\xff\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'sms'),
+
+    ('\x09\x46\xf0\x03\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'generecunknown2'),
+
+    ('\x09\x46\xf0\x04\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'generecunknown3'),
+
+    ('\x09\x46\xf0\x05\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'generecunknown4'),
+
+    ('\x09\x46\x13\x23\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'hiptop'),
+
+    ('\x09\x46\x13\x44\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'icq_direct'),
+
+    ('\x09\x46\x13\x47\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'addins'),
+
+    ('\x09\x46\x13\x4a\x4c\x7f\x11\xd1\x22\x82\x44\x45\x53\x54\x00\x00',
+     'games2'),
+
+    ('\x2e\x7a\x64\x75\xfa\xdf\x4d\xc8\x88\x6f\xea\x35\x95\xfd\xb6\xdf',
+     'icqutf8old'),
+
+    ('\x56\x3f\xc8\x09\x0b\x6f\x41\xbd\x9f\x79\x42\x26\x09\xdf\xa2\xf3',
+     'icq2go'),
+
+    ('\x97\xb1\x27\x51\x24\x3c\x43\x34\xad\x22\xd6\xab\xf7\x3f\x14\x09',
+     'generecunknown5'),
+
+    ('\xaa\x4a\x32\xb5\xf8\x84\x48\xc6\xa3\xd7\x8c\x50\x97\x19\xfd\x5b',
+     'apinfo'),
+
+    ('\xf2\xe7\xc7\xf4\xfe\xad\x4d\xfb\xb2\x35\x36\x79\x8b\xdf\x00\x00',
+     'trilliancrypt'),
+
+    ('\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
+     'empty')
+    ] )
+
 ###
 # Status indicators
 ###
@@ -1941,3 +1973,11 @@ STATUS_DCCONT = 0x2000
 MTN_FINISH = '\x00\x00'
 MTN_IDLE = '\x00\x01'
 MTN_BEGIN = '\x00\x02'
+
+# Motd types list
+MOTDS = dict( [
+    (0x01, "Mandatory upgrade needed notice"),
+    (0x02, "Advisable upgrade notice"),
+    (0x03, "AIM/ICQ service system announcements"),
+    (0x04, "Standart notice"),
+    (0x06, "Some news from AOL service") ] )
