@@ -31,6 +31,8 @@ import socks5, sockserror
 import countrycodes
 
 def logPacketData(data):
+    # Comment out to display packet log data
+    return
     lines = len(data)/16
     if lines*16 != len(data): lines=lines+1
     for i in range(lines):
@@ -146,7 +148,11 @@ class OSCARUser:
             elif k == 10: # icq ip address
                 self.icqIPaddy = socket.inet_ntoa(v)
             elif k == 12: # icq random stuff
-                self.icqRandom = v
+                # from http://iserverd1.khstu.ru/oscar/info_block.html
+                self.icqRandom = struct.unpack('!4sLBHLLLLLLH',v)
+                self.icqLANIPaddy = socket.inet_ntoa(self.icqRandom[0])
+                self.icqLANIPport = self.icqRandom[1]
+                self.icqProtocolVersion = self.icqRandom[3]
             elif k == 13: # capabilities
                 caps=[]
                 while v:
