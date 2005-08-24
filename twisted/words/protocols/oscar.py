@@ -113,6 +113,10 @@ class OSCARUser:
         self.warning = warn
         self.flags = []
         self.caps = []
+        self.icqIPaddy = None
+        self.icqLANIPaddy = None
+        self.icqLANIPport = None
+        self.icqProtocolVersion = None
         for k,v in tlvs.items():
             if k == 1: # user flags
                 v=struct.unpack('!H',v)[0]
@@ -1754,6 +1758,18 @@ class OscarAuthenticator(OscarConnection):
                           TLV(0x14,"\x00\x00\x00U")+
                           TLV(0x0f,"en")+
                           TLV(0x0e,"us"),0x01)
+#            self.sendFLAP('\000\000\000\001'+
+#                          TLV(0x01,self.username)+
+#                          TLV(0x02,encpass)+
+#                          TLV(0x03,'ICQ Inc. - Product of ICQ (TM).2003a.5.45.1.3777.85')+
+#                          TLV(0x16,"\x01\x0a")+
+#                          TLV(TLV_CLIENTMAJOR,"\x00\x05")+
+#                          TLV(TLV_CLIENTMINOR,"\x00\x2d")+
+#                          TLV(0x19,"\000\001")+
+#                          TLV(TLV_CLIENTSUB,"\x0e\c1")+
+#                          TLV(0x14,"\x00\x00\x00\x55")+
+#                          TLV(0x0f,"en")+
+#                          TLV(0x0e,"us"),0x01)
             self.state="Cookie"
 
     def oscar_Key(self,data):
