@@ -1,12 +1,14 @@
-# Copyright (c) 2001-2004 Twisted Matrix Laboratories.
+# Copyright (c) 2001-2005 Twisted Matrix Laboratories.
 # See LICENSE for details.
+#
+# vim: set sts=4 ts=4 expandtab :
 
 """An implementation of the OSCAR protocol, which AIM and ICQ use to communcate.
 
 This module is unstable.
 
-Maintainer: U{Paul Swartz<mailto:z3p@twistedmatrix.com>}
-Modifications done by: U{Daniel Henninger<mailto:jadestorm@nc.rr.com>}
+Maintainer: U{Daniel Henninger<mailto:jadestorm@nc.rr.com>}
+Previous Maintainer: U{Paul Swartz<mailto:z3p@twistedmatrix.com>}
 """
 
 from __future__ import nested_scopes
@@ -27,7 +29,6 @@ import re
 import binascii
 import threading
 import socks5, sockserror
-
 import countrycodes
 
 def logPacketData(data):
@@ -42,28 +43,42 @@ def logPacketData(data):
         log.msg(' '.join(hex)+ ' '*3*(16-len(d)) +''.join(text))
     log.msg('')
 
+def bitstostr(num, size):
+    bitstring = ''
+    if num < 0: return
+    if num == 0: return '0'*size
+    cnt = 0
+    while cnt < size:
+        bitstring = str(num % 2) + bitstring
+        num = num >> 1
+        cnt = cnt + 1
+    return bitstring
+
 def SNAC(fam,sub,id,data,flags=[0,0]):
-    header="!HHBBL"
-    head=struct.pack(header,fam,sub,
+    head=struct.pack("!HHBBL",fam,sub,
                      flags[0],flags[1],
                      id)
     return head+str(data)
 
 def readSNAC(data):
-    header="!HHBBL"
-    head=list(struct.unpack(header,data[:10]))
-    return head+[data[10:]]
+    if len(data) < 10: return None
+    head=list(struct.unpack("!HHBBL",data[:10]))
+    datapos = 10
+    if 0x80 & head[2]:
+        # Ah flag 0x8000, this is some sort of family indicator, skip it,
+        # we don't care.
+        sLen,id,length = struct.unpack(">HHH", data[datapos:datapos+6])
+        datapos = datapos + 6 + length
+    return head+[data[datapos:]]
 
 def TLV(type,value):
-    header="!HH"
-    head=struct.pack(header,type,len(value))
+    head=struct.pack("!HH",type,len(value))
     return head+str(value)
 
 def readTLVs(data,count=None):
-    header="!HH"
     dict={}
     while data and len(dict)!=count:
-        head=struct.unpack(header,data[:4])
+        head=struct.unpack("!HH",data[:4])
         dict[head[0]]=data[4:4+head[1]]
         data=data[4+head[1]:]
     if not count:
@@ -86,26 +101,26 @@ def encryptPasswordICQ(password):
     return r
 
 def dehtml(text):
-    text=string.replace(text,"<br>","\n")
-    text=string.replace(text,"<BR>","\n")
-    text=string.replace(text,"<Br>","\n") # XXX make this a regexp
-    text=string.replace(text,"<bR>","\n")
-    text=re.sub('<.*?>','',text)
+    if (not text):
+        text = ""
+    text=re.sub('<[Bb][Rr]>',"\n",text)
+    text=re.sub('<[^>]*>','',text)
     text=string.replace(text,'&gt;','>')
     text=string.replace(text,'&lt;','<')
     text=string.replace(text,'&nbsp;',' ')
-    #text=string.replace(text,'&#34;','"')
     text=string.replace(text,'&amp;','&')
-    text=string.replace(text,'&quot;','"')
+    text=string.replace(text,'&quot;',"'")
     return text
 
 def html(text):
-    #text=string.replace(text,'"','&#34;')
+    if (not text):
+        text = ""
     text=string.replace(text,'&','&amp;')
     text=string.replace(text,'<','&lt;')
     text=string.replace(text,'>','&gt;')
     text=string.replace(text,"\n","<br>")
     return '<html><body bgcolor="white"><font color="black">%s</font></body></html>'%text
+
 
 class OSCARUser:
     def __init__(self, name, warn, tlvs):
@@ -117,64 +132,124 @@ class OSCARUser:
         self.icqLANIPaddy = None
         self.icqLANIPport = None
         self.icqProtocolVersion = None
+        self.status = ""
+        self.idleTime = 0
+        self.iconhash = None
+        self.iconflags = None
         for k,v in tlvs.items():
-            if k == 1: # user flags
+            if k == 0x0001: # user flags
                 v=struct.unpack('!H',v)[0]
-                for o, f in [(1,'trial'),
-                             (2,'unknown bit 2'),
-                             (4,'aol'),
-                             (8,'unknown bit 4'),
-                             (16,'aim'),
-                             (32,'away'),
-                             (1024,'activebuddy')]:
+                for o, f in [(0x0001,'unconfirmed'),
+                             (0x0002,'admin'),
+                             (0x0004,'staff'),
+                             (0x0008,'commercial'),
+                             (0x0010,'free'),
+                             (0x0020,'away'),
+                             (0x0040,'icq'),
+                             (0x0080,'wireless'),
+                             (0x0100,'unknown'),
+                             (0x0200,'unknown'),
+                             (0x0400,'active'),
+                             (0x0800,'unknown'),
+                             (0x1000,'abinternal')]:
                     if v&o: self.flags.append(f)
-            elif k == 2: # member since date
-                self.memberSince = struct.unpack('!L',v)[0]
-            elif k == 3: # on-since
+            elif k == 0x0002: # account creation time
+                self.createdOn = struct.unpack('!L',v)[0]
+            elif k == 0x0003: # on-since
                 self.onSince = struct.unpack('!L',v)[0]
-            elif k == 4: # idle time
+            elif k == 0x0004: # idle time
                 self.idleTime = struct.unpack('!H',v)[0]
-            elif k == 5: # unknown
-                pass
-            elif k == 6: # icq online status
-                if v[2] == '\x00':
+            elif k == 0x0005: # member since
+                self.memberSince = struct.unpack('!L',v)[0]
+            elif k == 0x0006: # icq online status
+                if   v[0:2] == '\x00\x00\x00':
                     self.icqStatus = 'online'
-                elif v[2] == '\x01':
+                elif v[0:2] == '\x00\x00\x01':
                     self.icqStatus = 'away'
-                elif v[2] == '\x02':
+                elif v[0:2] == '\x00\x00\x02':
                     self.icqStatus = 'dnd'
-                elif v[2] == '\x04':
+                elif v[0:2] == '\x00\x00\x04':
                     self.icqStatus = 'xa'
-                elif v[2] == '\x10':
+                elif v[0:2] == '\x00\x00\x10':
                     self.icqStatus = 'busy'
+                elif v[0:2] == '\x00\x00\x20':
+                    self.icqStatus = 'chat'
+                elif v[0:2] == '\x00\x01\x00':
+                    self.icqStatus = 'invisible'
+                elif v[0:2] == '\x01\x00\x00':
+                    self.icqStatus = 'webaware'
+                elif v[0:2] == '\x02\x00\x00':
+                    self.icqStatus = 'hideip'
+                elif v[0:2] == '\x08\x00\x00':
+                    self.icqStatus = 'birthday'
                 else:
                     self.icqStatus = 'unknown'
-            elif k == 10: # icq ip address
+            elif k == 0x0008: # client type?
+                pass
+            elif k == 0x000a: # icq user ip address
                 self.icqIPaddy = socket.inet_ntoa(v)
-            elif k == 12: # icq random stuff
+            elif k == 0x000c: # icq random stuff
                 # from http://iserverd1.khstu.ru/oscar/info_block.html
                 self.icqRandom = struct.unpack('!4sLBHLLLLLLH',v)
                 self.icqLANIPaddy = socket.inet_ntoa(self.icqRandom[0])
                 self.icqLANIPport = self.icqRandom[1]
                 self.icqProtocolVersion = self.icqRandom[3]
-            elif k == 13: # capabilities
+            elif k == 0x000d: # capabilities
                 caps=[]
                 while v:
                     c=v[:16]
+
                     if CAPS.has_key(c): caps.append(CAPS[c])
                     else: caps.append(("unknown",c))
                     v=v[16:]
                 caps.sort()
                 self.caps=caps
-            elif k == 14: pass
-            elif k == 15: # session length (aim)
+            elif k == 0x000e: # AOL capability information
+                pass
+            elif k == 0x000f: # session length (aim)
                 self.sessionLength = struct.unpack('!L',v)[0]
-            elif k == 16: # session length (aol)
+            elif k == 0x0010: # session length (aol)
                 self.sessionLength = struct.unpack('!L',v)[0]
-            elif k == 30: # no idea
+            elif k == 0x0019: # OSCAR short capabilities
+                pass
+            elif k == 0x001a: # AOL short capabilities
+                pass
+            elif k == 0x001b: # encryption certification MD5 checksum
+                pass
+            elif k == 0x001d: # AIM Extended Status
+                log.msg("AIM Extended Status: user %s\nv: %s"%(self.name,repr(v)))
+                while len(v)>4 and ord(v[0]) == 0 and ord(v[3]) != 0:
+                    exttype,extflags,extlen = struct.unpack('!HBB',v[0:4])
+                    if exttype == 0x00: # Gaim skips this, so will we
+                        pass
+                    elif exttype == 0x01: # Actual interesting buddy icon
+                        if extlen > 0 and (extflags == 0x00 or extflags == 0x01):
+                            self.iconhash = v[4:4+extlen]
+                            self.icontype = extflags
+                            log.msg("   extracted icon hash: extflags = %s, iconhash = %s" % (str(hex(extflags)), binascii.hexlify(self.iconhash)))
+                    elif exttype == 0x02: # Extended Status Message
+                        if extlen >= 4: # Why?  Gaim does this
+                            availlen = (struct.unpack('!H', v[4:6]))[0]
+                            self.status = v[6:6+availlen]
+                            pos = 6+availlen
+                            hasencoding = (struct.unpack('!H',v[pos:pos+2]))[0]
+                            pos = pos+2
+                            self.statusencoding = None
+                            if hasencoding == 0x0001:
+                                enclen = (struct.unpack('!HH',v[pos:pos+4]))[1]
+                                self.statusencoding = v[pos+4:pos+4+enclen]
+                            log.msg("   extracted status message: %s"%(self.status))
+                            if self.statusencoding:
+                                log.msg("   status message encoding: %s"%(str(self.statusencoding)))
+                    else:
+                        log.msg("   unknown extended status type: %d\ndata: %s"%(ord(v[1]), repr(v[:ord(v[3])+4])))
+                    v=v[ord(v[3])+4:]
+            elif k == 0x001e: # unknown
+                pass
+            elif k == 0x001f: # unknown
                 pass
             else:
-                log.msg("unknown tlv for user %s\nt: %s\nv: %s"%(self.name,k,repr(v)))
+                log.msg("unknown tlv for user %s\nt: %s\nv: %s"%(self.name,str(hex(k)),repr(v)))
 
     def __str__(self):
         s = '<OSCARUser %s' % self.name
@@ -214,18 +289,31 @@ class SSIGroup:
         self.users.append(user)
         user.group = self
 
+    def delUser(self, user):
+        buddyID = self.usersToID[user]
+        self.users.remove(user)
+        del self.usersToID[user]
+        user.group = None
+
     def oscarRep(self):
         data = struct.pack(">H", len(self.name)) +self.name
         tlvs = TLV(0xc8, struct.pack(">H",len(self.users)))
         data += struct.pack(">4H", self.groupID, self.buddyID, 1, len(tlvs))
         return data+tlvs
-#	if len(self.users) > 0:
-#	        tlvData = TLV(0xc8, reduce(lambda x,y:x+y, [struct.pack('!H',self.usersToID[x]) for x in self.users]))
-#	else:
-#		tlvData = ""
+#      if len(self.users) > 0:
+#              tlvData = TLV(0xc8, reduce(lambda x,y:x+y, [struct.pack('!H',self.usersToID[x]) for x in self.users]))
+#      else:
+#              tlvData = ""
 #        return struct.pack('!H', len(self.name)) + self.name + \
 #               struct.pack('!HH', groupID, buddyID) + '\000\001' + \
 #               struct.pack(">H", len(tlvData)) + tlvData
+
+    def __str__(self):
+        s = '<SSIGroup %s (ID %d)' % (self.name, self.buddyID)
+        if len(self.users) > 0:
+            s=s+' (Members:'+', '.join(self.users)+')'
+        s=s+'>'
+        return s
 
 
 class SSIBuddy:
@@ -266,12 +354,42 @@ class SSIBuddy:
         data = struct.pack(">H", len(self.name)) + self.name
         tlvs = ""
         if not self.authorized:
-            tlvs += TLV(0x0066, "") # awaiting authozir
+            tlvs += TLV(0x0066, "") # awaiting authorization
         data += struct.pack(">4H", self.groupID, self.buddyID, 0, len(tlvs))
         return data+tlvs
 #        tlvData = reduce(lambda x,y: x+y, map(lambda (k,v):TLV(k,v), self.tlvs.items()), '\000\000')
 #        return struct.pack('!H', len(self.name)) + self.name + \
 #               struct.pack('!HH', groupID, buddyID) + '\000\000' + tlvData
+
+    def __str__(self):
+        s = '<SSIBuddy %s (ID %d)' % (self.name, self.buddyID)
+        s=s+'>'
+        return s
+
+
+class SSIIconSum:
+    def __init__(self, name="1", groupID=0x0000, buddyID=0x51f4, tlvs = {}):
+        self.name = name
+        self.buddyID = buddyID
+        self.groupID = groupID
+        self.iconSum = tlvs.get(0xd5,"")
+
+    def updateIcon(self, iconData):
+        m=md5.new()
+        m.update(iconData)
+        self.iconSum = m.digest()
+        log.msg("icon sum is %s" % binascii.hexlify(self.iconSum))
+ 
+    def oscarRep(self):
+        data = struct.pack(">H", len(self.name)) + self.name
+        tlvs = TLV(0x00d5,struct.pack('!BB', 0x00, len(self.iconSum))+self.iconSum)+TLV(0x0131, "")
+        data += struct.pack(">4H", self.groupID, self.buddyID, 0x0014, len(tlvs))
+        return data+tlvs
+
+    def __str__(self):
+        s = '<SSIIconSum %s:%s (ID %d)' % (self.name, binascii.hexlify(self.iconSum), self.buddyID)
+        s=s+'>'
+        return s
 
 
 class OscarConnection(protocol.Protocol):
@@ -282,32 +400,35 @@ class OscarConnection(protocol.Protocol):
         self.outRate=6000
         self.outTime=time.time()
         self.stopKeepAliveID = None
-        self.setKeepAlive(4*60) # 4 minutes
+        self.setKeepAlive(240) # 240 seconds = 4 minutes
 
     def connectionLost(self, reason):
         log.msg("Connection Lost! %s" % self)
         self.stopKeepAlive()
+        self.transport.loseConnection()
 
-#    def connectionFailed(self):
-#        log.msg("Connection Failed! %s" % self)
-#        self.stopKeepAlive()
+    def connectionFailed(self):
+        log.msg("Connection Failed! %s" % self)
+        self.stopKeepAlive()
 
     def sendFLAP(self,data,channel = 0x02):
-        header="!cBHH"
-	if (not hasattr(self, "seqnum")):
-		self.seqnum = 0
+        if not hasattr(self, "seqnum"):
+             self.seqnum = 0
         self.seqnum=(self.seqnum+1)%0xFFFF
         seqnum=self.seqnum
-        head=struct.pack(header,'*', channel,
+        head=struct.pack("!BBHH", 0x2a, channel,
                          seqnum, len(data))
         self.transport.write(head+str(data))
-#        if isinstance(self, ChatService):
-#            logPacketData(head+str(data))
+        #if isinstance(self, ChatService):
+        #    logPacketData(head+str(data))
 
     def readFlap(self):
-        if len(self.buf)<6: return
+        if len(self.buf)<6: return # We don't have a whole FLAP yet
         flap=struct.unpack("!BBHH",self.buf[:6])
-        if len(self.buf)<6+flap[3]: return
+        if len(self.buf)<6+flap[3]: return # We don't have a whole FLAP yet
+        if flap[0] != 0x2a:
+            log.msg("WHOA! Illegal FLAP id!  %x" % flap[0])
+            return
         data,self.buf=self.buf[6:6+flap[3]],self.buf[6+flap[3]:]
         return [flap[1],data]
 
@@ -316,6 +437,9 @@ class OscarConnection(protocol.Protocol):
         self.buf=self.buf+data
         flap=self.readFlap()
         while flap:
+            if flap[0] == 0x04:
+                # We failed to connect properly
+                self.connectionLost("Connection rejected.")
             func=getattr(self,"oscar_%s"%self.state,None)
             if not func:
                 log.msg("no func for state: %s" % self.state)
@@ -326,7 +450,8 @@ class OscarConnection(protocol.Protocol):
 
     def setKeepAlive(self,t):
         self.keepAliveDelay=t
-        self.stopKeepAlive()
+        if hasattr(self,"stopKeepAliveID") and self.stopKeepAliveID:
+            self.stopKeepAlive()
         self.stopKeepAliveID = reactor.callLater(t, self.sendKeepAlive)
 
     def sendKeepAlive(self):
@@ -355,7 +480,7 @@ class SNACBased(OscarConnection):
     def __init__(self,cookie):
         self.cookie=cookie
         self.lastID=0
-        self.supportedFamilies = ()
+        self.supportedFamilies = {}
         self.requestCallbacks={} # request id:Deferred
         self.scheduler=Scheduler(self.sendFLAP)
 
@@ -363,6 +488,10 @@ class SNACBased(OscarConnection):
         """
         send a snac and wait for the response by returning a Deferred.
         """
+        if not self.supportedFamilies.has_key(fam):
+            log.msg("Ignoring attempt to send unsupported SNAC family %s." % (str(hex(fam))))
+            return defer.fail("Attempted to send unsupported SNAC family.")
+
         reqid=self.lastID
         self.lastID=reqid+1
         d = defer.Deferred()
@@ -384,6 +513,10 @@ class SNACBased(OscarConnection):
         """
         send a snac, but don't bother adding a deferred, we don't care.
         """
+        if not self.supportedFamilies.has_key(fam):
+            log.msg("Ignoring attempt to send unsupported SNAC family %s." % (str(hex(fam))))
+            return
+
         snac=SNAC(fam,sub,0x10000*fam+sub,data)
         self.scheduler.enqueue(fam,sub,snac)
 
@@ -393,6 +526,9 @@ class SNACBased(OscarConnection):
 
     def oscar_Data(self,data):
         snac=readSNAC(data[1])
+        if not snac:
+            log.msg("Illegal SNAC data received in oscar_Data: %s" % data)
+            return
         if self.requestCallbacks.has_key(snac[4]):
             d = self.requestCallbacks[snac[4]]
             del self.requestCallbacks[snac[4]]
@@ -415,9 +551,11 @@ class SNACBased(OscarConnection):
 
     def oscar_01_03(self, snac):
         numFamilies = len(snac[3])/2
-        self.supportedFamilies = struct.unpack("!"+str(numFamilies)+'H', snac[3])
+        serverFamilies = struct.unpack("!"+str(numFamilies)+'H', snac[3])
         d = ''
-        for fam in self.supportedFamilies:
+        for fam in serverFamilies:
+            log.msg("Server supports SNAC family %s" % (str(hex(fam))))
+            self.supportedFamilies[fam] = True
             if self.snacFamilies.has_key(fam):
                 d=d+struct.pack('!2H',fam,self.snacFamilies[fam][0])
         self.sendSNACnr(0x01,0x17, d)
@@ -437,11 +575,13 @@ class SNACBased(OscarConnection):
         disconnect=info[6]
         current=info[7]
         maxrate=info[8]
-
+      
         self.scheduler.setStat(rateclass,window=window,clear=clear,alert=alert,limit=limit,disconnect=disconnect,rate=current,maxrate=maxrate)
+
+        #need to figure out a better way to do this
         #if (code==3):
-        #       import sys
-        #       sys.exit()
+        #    import sys
+        #    sys.exit()
 
     def oscar_01_18(self,snac):
         """
@@ -455,24 +595,28 @@ class SNACBased(OscarConnection):
         """
         d = ''
         for fam in self.supportedFamilies:
+            log.msg("Checking for client SNAC family support %s" % str(hex(fam)))
             if self.snacFamilies.has_key(fam):
                 version, toolID, toolVersion = self.snacFamilies[fam]
+                log.msg("    We do support at %s %s %s" % (str(version), str(hex(toolID)), str(hex(toolVersion))))
                 d = d + struct.pack('!4H',fam,version,toolID,toolVersion)
         self.sendSNACnr(0x01,0x02,d)
 
+
 class BOSConnection(SNACBased):
     snacFamilies = {
-        0x01:(3, 0x0110, 0x059b),
-        0x13:(3, 0x0110, 0x059b),
-        0x02:(1, 0x0110, 0x059b),
-        0x03:(1, 0x0110, 0x059b),
-        0x04:(1, 0x0110, 0x059b),
-        0x06:(1, 0x0110, 0x059b),
+        0x01:(3, 0x0110, 0x0629),
+        0x02:(1, 0x0110, 0x0629),
+        0x03:(1, 0x0110, 0x0629),
+        0x04:(1, 0x0110, 0x0629),
+        0x06:(1, 0x0110, 0x0629),
         0x08:(1, 0x0104, 0x0001),
-        0x09:(1, 0x0110, 0x059b),
-        0x0a:(1, 0x0110, 0x059b),
+        0x09:(1, 0x0110, 0x0629),
+        0x0a:(1, 0x0110, 0x0629),
         0x0b:(1, 0x0104, 0x0001),
-        0x0c:(1, 0x0104, 0x0001)
+        0x0c:(1, 0x0104, 0x0001),
+        0x13:(3, 0x0110, 0x0629),
+        0x15:(1, 0x0110, 0x047c)
     }
 
     capabilities = None
@@ -597,7 +741,7 @@ class BOSConnection(SNACBased):
         return notes
 
     def parseFullInfo(self, data):
-	#result = ord(data[0])
+        #result = ord(data[0])
         #if result != 0xa:
         #    return
         pos = 0
@@ -663,12 +807,12 @@ class BOSConnection(SNACBased):
         else:
             homeCountry = ""
 
-	return nick,first,last,email,homeCity,homeState,homePhone,homeFax,homeAddress,cellPhone,homeZip,homeCountry
+        return nick,first,last,email,homeCity,homeState,homePhone,homeFax,homeAddress,cellPhone,homeZip,homeCountry
 
     def parseBasicInfo(self,data):
-	#result = ord(data[0])
+        #result = ord(data[0])
 
-	pos = 0
+        pos = 0
         nicklen = struct.unpack('<H', data[pos:pos+2])[0]
         pos += 2
         nick = data[pos:pos + nicklen - 1]
@@ -688,14 +832,14 @@ class BOSConnection(SNACBased):
         pos += 2
         email = data[pos:pos + emaillen - 1]
 
-	return nick,first,last,email
+        return nick,first,last,email
 
     def oscar_01_05(self, snac, d = None):
         """
         data for a new service connection
         d might be a deferred to be called back when the service is ready
         """
-        tlvs = readTLVs(snac[3][2:])
+        tlvs = readTLVs(snac[3][0:])
         service = struct.unpack('!H',tlvs[0x0d])[0]
         ip = tlvs[5]
         cookie = tlvs[6]
@@ -721,26 +865,26 @@ class BOSConnection(SNACBased):
         count=struct.unpack('!H',snac[3][0:2])[0]
         snac[3]=snac[3][2:]
         for i in range(count):
-              info=struct.unpack('!HLLLLLLL',snac[3][:30])
-              classid=info[0]
-              window=info[1]
-              clear=info[2]
-              currentrate=info[6]
-              lasttime=time.time()
-              maxrate=info[7]
-              self.scheduler.setStat(classid,window=window,clear=clear,rate=currentrate,lasttime=lasttime,maxrate=maxrate)
-              snac[3]=snac[3][35:]
+            info=struct.unpack('!HLLLLLLL',snac[3][:30])
+            classid=info[0]
+            window=info[1]
+            clear=info[2]
+            currentrate=info[6]
+            lasttime=time.time()
+            maxrate=info[7]
+            self.scheduler.setStat(classid,window=window,clear=clear,rate=currentrate,lasttime=lasttime,maxrate=maxrate)
+            snac[3]=snac[3][35:]
 
         while (len(snac[3]) > 0):
-              info=struct.unpack('!HH',snac[3][:4])
-              classid=info[0]
-              count=info[1]
-              info=struct.unpack('!'+str(2*count)+'H',snac[3][4:4+count*4])
-              while (len(info)>0):
-                   fam,sub=str(info[0]),str(info[1])
-                   self.scheduler.bindIntoClass(fam,sub,classid)
-                   info=info[2:]
-              snac[3]=snac[3][4+count*4:]             
+            info=struct.unpack('!HH',snac[3][:4])
+            classid=info[0]
+            count=info[1]
+            info=struct.unpack('!'+str(2*count)+'H',snac[3][4:4+count*4])
+            while (len(info)>0):
+                fam,sub=str(info[0]),str(info[1])
+                self.scheduler.bindIntoClass(fam,sub,classid)
+                info=info[2:]
+            snac[3]=snac[3][4+count*4:]             
 
         self.sendSNACnr(0x01,0x08,"\x00\x01\x00\x02\x00\x03\x00\x04\x00\x05") # ack
         self.initDone()
@@ -749,6 +893,13 @@ class BOSConnection(SNACBased):
         self.sendSNACnr(0x03,0x02,'') # buddy list rights
         self.sendSNACnr(0x04,0x04,'') # ICBM parms
         self.sendSNACnr(0x09,0x02,'') # BOS rights
+
+    def oscar_01_0F(self,snac):
+        """
+        Receive Self User Info
+        """
+        log.msg('Received Self User Info %s' % str(snac))
+        self.receivedSelfInfo(self.parseUser(snac[3]))
 
     def oscar_01_10(self,snac):
         """
@@ -770,6 +921,30 @@ class BOSConnection(SNACBased):
         if MOTDS.has_key(motd_msg_type):
             tlvs = readTLVs(snac[3][2:])
             motd_msg_string = tlvs[0x0b]
+
+    def oscar_01_21(self,snac):
+        """
+        Receive extended status info
+        """
+        v = snac[3]
+        log.msg('Received extended status info for %s: %s' % (self.username, str(snac)))
+
+        while len(v)>4 and ord(v[0]) == 0 and ord(v[3]) != 0:
+            exttype = (struct.unpack('!H',v[0:2]))[0]
+            if exttype == 0x00 or exttype == 0x01: # Why are there two?
+                iconflags, iconhashlen = struct.unpack('!BB',v[2:4])
+                iconhash = v[4:4+iconhashlen]
+                log.msg("   extracted icon hash: flags = %s, flags-as-hex = %s, iconhash = %s" % (bitstostr(iconflags, 8), str(hex(iconflags)), binascii.hexlify(iconhash)))
+                if iconflags == 0x41:
+                    self.requestBuddyIcon(iconhash)
+            elif exttype == 0x02: # Extended Status Message
+                # I'm not sure if we should do something about this here?
+                statlen=int((struct.unpack('!H', v[2:4]))[0])
+                status=v[4:4+statlen]
+                log.msg("   extracted status message: %s"%(status))
+            else:
+                log.msg("   unknown extended status type: %d\ndata: %s"%(ord(v[1]), repr(v[:ord(v[3])+4])))
+            v=v[ord(v[3])+4:]
 
     def oscar_02_03(self, snac):
         """
@@ -820,40 +995,64 @@ class BOSConnection(SNACBased):
             flags = []
             multiparts = []
             for k, v in tlvs.items():
-                if k == 2:
+                if k == 0x02: # message data
+                    log.msg("Message data: %s" % (repr(v)))
                     while v:
-                        v = v[2:] # skip bad data
-                        messageLength, charSet, charSubSet = struct.unpack('!3H', v[:6])
-                        messageLength -= 4
-                        message = [v[6:6+messageLength]]
-                        if charSet == 0:
-                            pass # don't add anything special
-                        elif charSet == 2:
-                            message.append('unicode')
-                        elif charSet == 3:
-                            message.append('iso-8859-1')
-                        elif charSet == 0xffff:
-                            message.append('none')
-                        if charSubSet == 0xb:
-                            message.append('macintosh')
-                        if messageLength > 0: multiparts.append(tuple(message))
-                        v = v[6+messageLength:]
-                elif k == 3:
+                        #2005/09/25 13:55 EDT [B,client] Message data: '\x05\x01\x00\x01\x01\x01\x01\x00\xaf\x00\x03\x00\x00<html><body ichatballooncolor="#7BB5EE" ichattextcolor="#000000"><font face="Courier" ABSZ=12 color="#000000">test\xe4ng the transport for fun and profit</font></body></html>'
+                        fragtype,fragver,fraglen = struct.unpack('!BBH', v[:4])
+                        if fragtype == 0x05:
+                            # This is a required capabilities list
+                            # We really have no idea what to do with this...
+                            # actual capabilities seen have been 0x01... text?
+                            # we shall move on with our lives
+                            pass
+                        elif fragtype == 0x01:
+                            # This is what we're realllly after.. message data.
+                            charSet, charSubSet = struct.unpack('!HH', v[4:8])
+                            messageLength = fraglen - 4 # ditch the charsets
+                            message = [v[8:8+messageLength]]
+
+                            if charSet == 0x0000:
+                                message.append('ascii')
+                            elif charSet == 0x0002:
+                                message.append('unicode')
+                            elif charSet == 0x0003:
+                                message.append('custom') # iso-8859-1?
+                            elif charSet == 0xffff:
+                                message.append('none')
+                            else:
+                                message.append('unknown')
+
+                            if charSubSet == 0x0000:
+                                message.append('standard')
+                            elif charSubSet == 0x000b:
+                                message.append('macintosh')
+                            elif charSubSet == 0xffff:
+                                message.append('none')
+                            else:
+                                message.append('unknown')
+
+                            if messageLength > 0: multiparts.append(tuple(message))
+                        else:
+                            # Uh... what is this???
+                            log.msg("unknown message fragment %d %d: %v" % (fragtype, fragver, str(v)))
+                        v = v[4+fraglen:]
+                elif k == 0x03: # server ack requested
                     flags.append('acknowledge')
-                elif k == 4:
+                elif k == 0x04: # message is auto response
                     flags.append('auto')
-                elif k == 6:
+                elif k == 0x06: # message received offline
                     flags.append('offline')
-                elif k == 8:
+                elif k == 0x08: # has a buddy icon
                     iconLength, foo, iconSum, iconStamp = struct.unpack('!LHHL',v)
                     if iconLength:
                         flags.append('icon')
                         flags.append((iconLength, iconSum, iconStamp))
-                elif k == 9:
+                elif k == 0x09: # request for buddy icon
                     flags.append('buddyrequest')
-                elif k == 0xb: # unknown
-                    pass
-                elif k == 0x17:
+                elif k == 0x0b: # non-direct connect typing notification
+                    flags.append('typingnot')
+                elif k == 0x17: # extra data.. wonder what this is?
                     flags.append('extradata')
                     flags.append(v)
                 else:
@@ -864,14 +1063,21 @@ class BOSConnection(SNACBased):
 #  v: '\x00\x00\x00\x05\x02\x01\xd2\x04r\x00\x01\x01\x10/\x8c\x8b\x8a\x1e\x94*\xbc\x80}\x8d\xc4;\x1dEM'
 # XXX what is this?
             self.receiveMessage(user, multiparts, flags)
-        elif channel == 2: # rondevouz
+        elif channel == 2: # rendezvous
             status = struct.unpack('!H',tlvs[5][:2])[0]
             requestClass = tlvs[5][10:26]
             moreTLVs = readTLVs(tlvs[5][26:])
             if requestClass == CAP_CHAT: # a chat request
-                exchange = struct.unpack('!H',moreTLVs[10001][:2])[0]
-                name = moreTLVs[10001][3:-2]
-                instance = struct.unpack('!H',moreTLVs[10001][-2:])[0]
+                exchange = None
+                name = None
+                instance = None
+                if moreTLVs.has_key(10001):
+                    exchange = struct.unpack('!H',moreTLVs[10001][:2])[0]
+                    name = moreTLVs[10001][3:-2]
+                    instance = struct.unpack('!H',moreTLVs[10001][-2:])[0]
+                if not exchange or not name or not instance:
+                    self.chatInvitationAccepted(user)
+                    return
                 if not self.services.has_key(SERVICE_CHATNAV):
                     self.connectService(SERVICE_CHATNAV,1).addCallback(lambda x: self.services[SERVICE_CHATNAV].getChatInfo(exchange, name, instance).\
                         addCallback(self._cbGetChatInfoForInvite, user, moreTLVs[12]))
@@ -883,12 +1089,13 @@ class BOSConnection(SNACBased):
                     log.msg('cancelled file request')
                     log.msg(status)
                     return # handle this later
-                name = moreTLVs[10001][9:-7]
-                desc = moreTLVs[12]
-                log.msg('file request from %s, %s, %s' % (user, name, desc))
-                self.receiveSendFileRequest(user, name, desc, cookie)
+                if moreTLVs.has_key(10001):
+                    name = moreTLVs[10001][9:-7]
+                    desc = moreTLVs[12]
+                    log.msg('file request from %s, %s, %s' % (user, name, desc))
+                    self.receiveSendFileRequest(user, name, desc, cookie)
             else:
-                log.msg('unsupported rondevouz: %s' % requestClass)
+                log.msg('unsupported rendezvous: %s' % requestClass)
                 log.msg(repr(moreTLVs))
         elif channel == 4:
             for k,v in tlvs.items():
@@ -917,10 +1124,10 @@ class BOSConnection(SNACBased):
                         self.gotAuthorizationRequest(uin)
                     elif messageType == 0x07:
                         # authorization denied
-                        self.gotAuthorizationRespons(uin, False)
+                        self.gotAuthorizationResponse(uin, False)
                     elif messageType == 0x08:
                         # authorization ok
-                        self.gotAuthorizationRespons(uin, True)
+                        self.gotAuthorizationResponse(uin, True)
         else:
             log.msg('unknown channel %02x' % channel)
             log.msg(tlvs)
@@ -939,7 +1146,7 @@ class BOSConnection(SNACBased):
 
         if (type == 0x02):
             self.receiveTypingNotify("begin", user)
-        if (type == 0x01):
+        elif (type == 0x01):
             self.receiveTypingNotify("idle", user)
         elif (type == 0x00):
             self.receiveTypingNotify("finish", user)
@@ -980,24 +1187,23 @@ class BOSConnection(SNACBased):
         Got authorization request
         """
         pos = 0
-        if 0x80 & snac[0] or 0x80 & snac[1]:
-            sLen,id,length = struct.unpack(">HHH", snac[3][:6])
-            pos = 6 + length
+        #if 0x80 & snac[0] or 0x80 & snac[1]:
+        #    sLen,id,length = struct.unpack(">HHH", snac[3][:6])
+        #    pos = 6 + length
         uinlen = ord(snac[3][pos])
         pos += 1
         uin = snac[3][pos:pos+uinlen]
         pos += uinlen
         self.gotAuthorizationRequest(uin)
 
-
     def oscar_13_1B(self, snac):
         """
-        Got authorization respons
+        Got authorization response
         """
         pos = 0
-        if 0x80 & snac[0] or 0x80 & snac[1]:
-            sLen,id,length = struct.unpack(">HHH", snac[3][:6])
-            pos = 6 + length
+        #if 0x80 & snac[0] or 0x80 & snac[1]:
+        #    sLen,id,length = struct.unpack(">HHH", snac[3][:6])
+        #    pos = 6 + length
         uinlen = ord(snac[3][pos])
         pos += 1
         uin = snac[3][pos:pos+uinlen]
@@ -1009,20 +1215,20 @@ class BOSConnection(SNACBased):
         reason = snac[3][pos:]
         if success:
             # authorization request successfully granted
-            self.gotAuthorizationRespons(uin, True)
+            self.gotAuthorizationResponse(uin, True)
         else:
             # authorization request was not granted
-            self.gotAuthorizationRespons(uin, False)
+            self.gotAuthorizationResponse(uin, False)
 
     def oscar_13_1C(self, snac):
         """
         SSI Your were added to someone's buddylist
         """
         pos = 0
-        if 0x80 & snac[0] or 0x80 & snac[1]:
-            sLen,id,length = struct.unpack(">HHH", snac[3][:6])
-            pos = 6 + length
-            val = snac[3][4:pos]
+        #if 0x80 & snac[0] or 0x80 & snac[1]:
+        #    sLen,id,length = struct.unpack(">HHH", snac[3][:6])
+        #    pos = 6 + length
+        #    val = snac[3][4:pos]
         uinLen = ord(snac[3][pos])
         uin = snac[3][pos+1:pos+1+uinLen]
         self.youWereAdded(uin)
@@ -1039,6 +1245,10 @@ class BOSConnection(SNACBased):
 
     def _ebDeferredSelfInfoError(self, error):
         log.msg('ERROR IN SELFINFO DEFERRED %s' % error)
+
+    def _cbRequestSelfInfo(self, snac, d):
+        self.receivedSelfInfo(self.parseUser(snac[5]))
+        #d.callback(self.parseUser(snac[5]))
 
     def oscar_15_03(self, snac):
         """
@@ -1067,7 +1277,7 @@ class BOSConnection(SNACBased):
                         self.receiveMessage(user, multiparts, flags)
                 elif (type == 0x42):
                     # End of offline messages
-	            reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3e\x00\x02\x00'
+                    reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3e\x00\x02\x00'
                     tlvs = TLV(0x01, reqdata)
                     self.sendSNAC(0x15, 0x02, tlvs)
                 elif (type == 0x7da):
@@ -1110,9 +1320,6 @@ class BOSConnection(SNACBased):
             #else:
             #    print str(k)+":::"+str(v)+"\n"
 
-    def _cbRequestSelfInfo(self, snac, d):
-        d.callback(self.parseUser(snac[5]))
-
     def initSSI(self):
         """
         this sends the rate request for family 0x13 (Server Side Information)
@@ -1136,7 +1343,7 @@ class BOSConnection(SNACBased):
             return
         itemdata = snac[5][3:]
         if args:
-            revision, groups, permit, deny, permitMode, visibility = args
+            revision, groups, permit, deny, permitMode, visibility, iconcksum = args
         else:
             version, revision = struct.unpack('!BH', snac[5][:3])
             groups = {}
@@ -1144,6 +1351,7 @@ class BOSConnection(SNACBased):
             deny = []
             permitMode = None
             visibility = None
+            iconcksum = []
         while len(itemdata)>4:
             nameLength = struct.unpack('!H', itemdata[:2])[0]
             name = itemdata[2:2+nameLength]
@@ -1151,45 +1359,59 @@ class BOSConnection(SNACBased):
                 struct.unpack('!4H', itemdata[2+nameLength:10+nameLength])
             tlvs = readTLVs(itemdata[10+nameLength:10+nameLength+restLength])
             itemdata = itemdata[10+nameLength+restLength:]
-            if itemType == 0: # buddies
+            if itemType == AIM_SSI_TYPE_BUDDY: # buddies
                 groups[groupID].addUser(buddyID, SSIBuddy(name, groupID, buddyID, tlvs))
-            elif itemType == 1: # group
+            elif itemType == AIM_SSI_TYPE_GROUP: # group
                 g = SSIGroup(name, groupID, buddyID, tlvs)
                 if groups.has_key(0): groups[0].addUser(groupID, g)
                 groups[groupID] = g
-            elif itemType == 2: # permit
+            elif itemType == AIM_SSI_TYPE_PERMIT: # permit
                 permit.append(name)
-            elif itemType == 3: # deny
+            elif itemType == AIM_SSI_TYPE_DENY: # deny
                 deny.append(name)
-            elif itemType == 4: # permit deny info
-                if not tlvs.has_key(0xcb):
-                    continue # this happens with ICQ
-                permitMode = {1:'permitall',2:'denyall',3:'permitsome',4:'denysome',5:'permitbuddies'}[ord(tlvs[0xca])]
-                visibility = {'\xff\xff\xff\xff':'all','\x00\x00\x00\x04':'notaim'}.get(tlvs[0xcb], 'unknown')
-            elif itemType == 5: # unknown (perhaps idle data)?
+            elif itemType == AIM_SSI_TYPE_PDINFO: # permit deny info
+                if tlvs.has_key(0xca):
+                    permitMode = {0x01:'permitall',0x02:'denyall',0x03:'permitsome',0x04:'denysome',0x05:'permitbuddies'}.get(ord(tlvs[0xca]),None)
+                if tlvs.has_key(0xcb):
+                    visibility = {'\xff\xff\xff\xff':'all','\x00\x00\x00\x04':'notaim'}.get(tlvs[0xcb],None)
+            elif itemType == AIM_SSI_TYPE_PRESENCEPREFS: # presence preferences
                 pass
+            elif itemType == AIM_SSI_TYPE_ICQSHORTCUT: # ICQ2K shortcuts bar?
+                pass
+            elif itemType == AIM_SSI_TYPE_IGNORE: # Ignore list record
+                pass
+            elif itemType == AIM_SSI_TYPE_LASTUPDATE: # Last update time
+                pass
+            elif itemType == AIM_SSI_TYPE_SMS: # SMS contact. Like 1#EXT, 2#EXT, etc
+                pass
+            elif itemType == AIM_SSI_TYPE_IMPORTTIME: # Roster import time
+                pass
+            elif itemType == AIM_SSI_TYPE_ICONINFO: # icon information
+                # I'm not sure why there are multiple of these sometimes
+                # We're going to return all of them though...
+                iconcksum.append(SSIIconSum(name, groupID, buddyID, tlvs))
             else:
-                log.msg('%s %s %s %s %s' % (name, groupID, buddyID, itemType, tlvs))
+                log.msg('unknown SSI entry: %s %s %s %s %s' % (name, groupID, buddyID, itemType, tlvs))
         timestamp = struct.unpack('!L',itemdata)[0]
         if not timestamp: # we've got more packets coming
             # which means add some deferred stuff
             d = defer.Deferred()
             self.requestCallbacks[snac[4]] = d
-            d.addCallback(self._cbRequestSSI, (revision, groups, permit, deny, permitMode, visibility))
-            d.addErrback(self._ebDeferredRequestSSIError, revision, groups, permit, deny, permitMode, visibility)
+            d.addCallback(self._cbRequestSSI, (revision, groups, permit, deny, permitMode, visibility, iconcksum))
+            d.addErrback(self._ebDeferredRequestSSIError, revision, groups, permit, deny, permitMode, visibility, iconcksum)
             return d
         if (len(groups) <= 0):
-		gusers = None
-	else:
-		gusers = groups[0].users
-        return (gusers,permit,deny,permitMode,visibility,timestamp,revision)
+            gusers = None
+        else:
+            gusers = groups[0].users
+        return (gusers,permit,deny,permitMode,visibility,iconcksum,timestamp,revision)
 
-    def _ebDeferredRequestSSIError(self, error, revision, groups, permit, deny, permitMode, visibility):
+    def _ebDeferredRequestSSIError(self, error, revision, groups, permit, deny, permitMode, visibility, iconcksum):
         log.msg('ERROR IN REQUEST SSI DEFERRED %s' % error)
 
     def activateSSI(self):
         """
-        active the data stored on the server (use buddy list, permit deny settings, etc.)
+        activate the data stored on the server (use buddy list, permit deny settings, etc.)
         """
         self.sendSNACnr(0x13,0x07,'')
 
@@ -1211,9 +1433,9 @@ class BOSConnection(SNACBased):
 
     def _cbAddItemSSI(self, snac, item):
         pos = 0
-        if snac[2] & 0x80 or snac[3] & 0x80:
-            sLen,id,length = struct.unpack(">HHH", snac[5][:6])
-            pos = 6 + length
+        #if snac[2] & 0x80 or snac[3] & 0x80:
+        #    sLen,id,length = struct.unpack(">HHH", snac[5][:6])
+        #    pos = 6 + length
         if snac[5][pos:pos+2] == "\00\00":
 # success
 #                data = struct.pack(">H", len(groupName))+groupName
@@ -1242,12 +1464,16 @@ class BOSConnection(SNACBased):
 
     def modifyItemSSI(self, item, groupID = None, buddyID = None):
         if groupID is None:
-            if isinstance(item, SSIGroup):
+            if isinstance(item, SSIIconSum):
+                groupID = 0
+            elif isinstance(item, SSIGroup):
                 groupID = 0
             else:
                 groupID = item.group.group.findIDFor(item.group)
         if buddyID is None:
-            if hasattr(item, "group"):
+            if isinstance(item, SSIIconSum):
+                buddyID = 0x5dd6
+            elif hasattr(item, "group"):
                 buddyID = item.group.findIDFor(item)
             else:
                 buddyID = 0
@@ -1259,7 +1485,7 @@ class BOSConnection(SNACBased):
     def endModifySSI(self):
         self.sendSNACnr(0x13,0x12,'')
 
-    def setProfile(self, profile):
+    def setProfile(self, profile=None):
         """
         set the profile.
         send None to not set a profile (different from '' for a blank one)
@@ -1282,6 +1508,33 @@ class BOSConnection(SNACBased):
                TLV(4,away or '')
         self.sendSNACnr(0x02, 0x04, tlvs)
 
+    def setBack(self, status=None):
+        """
+        set the extended status message
+        """
+        # If our away message is set, clear it.
+        if self.awayMessage:
+            self.setAway()
+        
+        if not status:
+            status = ""
+        else:
+            status = status[:220]
+               
+        log.msg("Setting extended status message to \"%s\""%status)
+        self.backMessage = status
+        packet = struct.pack(
+               "!HHHbbH",
+               0x001d,         # H
+               len(status)+8,  # H
+               0x0002,         # H
+               0x04,           # b
+               len(status)+4,  # b
+               len(status)     # H
+        ) + str(status) + struct.pack("H",0x0000)
+        
+        self.sendSNACnr(0x01, 0x1e, packet)
+
     def sendAuthorizationRequest(self, uin, authString):
         """
         send an authorization request
@@ -1294,9 +1547,9 @@ class BOSConnection(SNACBased):
         log.msg("sending authorization request to %s"%uin)
         self.sendSNACnr(0x13, 0x18, packet)
 
-    def sendAuthorizationRespons(self, uin, success, responsString):
+    def sendAuthorizationResponse(self, uin, success, responsString):
         """
-        send an authorization respons
+        send an authorization response
         """
         packet  = struct.pack("b", len(uin)) + uin
         if success:
@@ -1348,6 +1601,7 @@ class BOSConnection(SNACBased):
             charSet = 0
             if 'unicode' in part[1:]:
                 charSet = 2
+                #part[0] = part[0].encode('utf-8')
                 part[0] = part[0].encode('utf-16be', 'replace')
             elif 'iso-8859-1' in part[1:]:
                 charSet = 3
@@ -1375,6 +1629,27 @@ class BOSConnection(SNACBased):
     def _cbSendMessageAck(self, snac, user, message):
         return user, message
 
+    def sendInvite(self, user, chatroom, wantAck = 0):
+        """
+        send a chat room invitation to a user (not an OSCARUser).
+        if wantAck, we return a Deferred that gets a callback when the message is sent.
+        """
+        cookie = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
+        intdata = '\x00\x00'+cookie+CAP_CHAT
+        intdata = intdata + TLV(0x0a,'\x00\x01')
+        intdata = intdata + TLV(0x0f,'')
+        intdata = intdata + TLV(0x0d,'us-ascii')
+        intdata = intdata + TLV(0x0c,'Please join me in this Chat.')
+        intdata = intdata + TLV(0x2711,struct.pack('!HB',chatroom.exchange,len(chatroom.fullName))+chatroom.fullName+struct.pack('!H',chatroom.instance))
+        data = cookie+'\x00\x02'+chr(len(user))+user+TLV(5,intdata)
+        if wantAck:
+            data = data + TLV(3,'')
+            return self.sendSNAC(0x04, 0x06, data).addCallback(self._cbSendInviteAck, user, chatroom)
+        self.sendSNACnr(0x04, 0x06, data)
+
+    def _cbSendInviteAck(self, snac, user, chatroom):
+        return user, chatroom
+
     def connectService(self, service, wantCallback = 0, extraData = ''):
         """
         connect to another service
@@ -1393,19 +1668,24 @@ class BOSConnection(SNACBased):
         log.msg('ERROR IN CONNECT SERVICE DEFERRED %s' % error)
 
     def _cbConnectService(self, snac, d):
-        d.arm()
-        self.oscar_01_05(snac[2:], d)
+        if snac:
+            #d.arm()
+            # CHECKME, something was happening here involving getting a snac packet
+            # that didn't have [2:] in it...
+            self.oscar_01_05(snac[2:], d)
+        else:
+            self.connectionFailed()
 
-    def createChat(self, shortName):
+    def createChat(self, shortName, exchange):
         """
         create a chat room
         """
         if self.services.has_key(SERVICE_CHATNAV):
-            return self.services[SERVICE_CHATNAV].createChat(shortName)
+            return self.services[SERVICE_CHATNAV].createChat(shortName,exchange)
         else:
             d = defer.Deferred()
             d.addErrback(self._ebDeferredCreateChatError)
-            self.connectService(SERVICE_CHATNAV,1).addCallback(lambda s:d.arm() or s.createChat(shortName).chainDeferred(d))
+            self.connectService(SERVICE_CHATNAV,1).addCallback(lambda s:s.createChat(shortName,exchange).chainDeferred(d))
             return d
 
     def _ebDeferredCreateChatError(self, error):
@@ -1440,6 +1720,201 @@ class BOSConnection(SNACBased):
         tlvs = readTLVs(rest)
         return tlvs.get(0x02,None)
 
+    def getProfile(self, user):
+        #if user.
+        return self.sendSNAC(0x02, 0x15, '\x00\x00\x00\x01'+chr(len(user))+user).addCallback(self._cbGetProfile).addErrback(self._cbGetProfileError)
+
+    def _cbGetProfile(self, snac):
+        user, rest = self.parseUser(snac[5],1)
+        tlvs = readTLVs(rest)
+        #encoding = tlvs[1]  We're ignoring this for now
+        #profile = tlvs[2]  This is what we're after
+
+        return tlvs.get(0x02,None)
+
+    def _cbGetProfileError(self, result):
+        return result
+
+    def lookupEmail(self, email):
+        #if email.
+        return self.sendSNAC(0x0a, 0x02, email).addCallback(self._cbLookupEmail).addErrback(self._cbLookupEmailError)
+
+    def _cbLookupEmail(self, snac):
+        tlvs = readTLVs(snac[5])
+        results = []
+        data = snac[5]
+        while data:
+           tlv,data = readTLVs(data, count=1)
+           results.append(tlv[0x01])
+
+        return results
+
+    def _cbLookupEmailError(self, result):
+        return result
+
+    def sendDirectorySearch(self, email=None, first=None, middle=None, last=None, maiden=None, nickname=None, address=None, city=None, state=None, zip=None, country=None, interest=None):
+        """
+        starts a directory search connection
+        """
+        #if self.services.has_key(SERVICE_DIRECTORY):
+        #    if(email):
+        #        return self.services[SERVICE_DIRECTORY].sendDirectorySearchByEmail(email)
+        #    elif(interest):
+        #        return self.services[SERVICE_DIRECTORY].sendDirectorySearchByInterest(interest)
+        #    else:
+        #        return self.services[SERVICE_DIRECTORY].sendDirectorySearchByNameAddr(first, middle, last, maiden, nickname, address, city, state, zip, country)
+        #else:
+        d = defer.Deferred()
+        d.addErrback(self._ebDeferredSendDirectorySearchError)
+        if(email):
+            self.connectService(SERVICE_DIRECTORY,1).addCallback(lambda s:s.sendDirectorySearchByEmail(email).chainDeferred(d))
+        elif(interest):
+            self.connectService(SERVICE_DIRECTORY,1).addCallback(lambda s:s.sendDirectorySearchByInterest(interest).chainDeferred(d))
+        else:
+            self.connectService(SERVICE_DIRECTORY,1).addCallback(lambda s:s.sendDirectorySearchByNameAddr(first, middle, last, maiden, nickname, address, city, state, zip, country).chainDeferred(d))
+        return d
+
+    def _ebDeferredSendDirectorySearchError(self, error):
+        log.msg('ERROR IN SEND DIRECTORY SEARCH %s' % error)
+
+    def sendInterestsRequest(self):
+        """
+        retrieves list of directory interests
+        """
+        #if self.services.has_key(SERVICE_DIRECTORY):
+        #    return self.services[SERVICE_DIRECTORY].sendInterestsRequest()
+        #else:
+        d = defer.Deferred()
+        d.addErrback(self._ebDeferredSendInterestsRequestError)
+        self.connectService(SERVICE_DIRECTORY,1).addCallback(lambda s:s.sendInterestsRequest().chainDeferred(d))
+        return d
+
+    def _ebDeferredSendInterestsRequestError(self, error):
+        log.msg('ERROR IN SEND INTERESTS REQUEST %s' % error)
+
+    def activateEmailNotification(self):
+        """
+        requests notification of email
+        """
+        if not self.services.has_key(SERVICE_EMAIL):
+            self.connectService(SERVICE_EMAIL,1)
+
+    def changePassword(self, oldpass, newpass):
+        """
+        changes a user's password
+        """
+        #if self.services.has_key(SERVICE_ADMIN):
+        #    return self.services[SERVICE_ADMIN].changePassword(oldpass, newpass)
+        #else:
+        d = defer.Deferred()
+        d.addErrback(self._ebDeferredChangePasswordError)
+        self.connectService(SERVICE_ADMIN,1).addCallback(lambda s:s.changePassword(oldpass, newpass).chainDeferred(d))
+        return d
+
+    def _ebDeferredChangePasswordError(self, error):
+        log.msg('ERROR IN CHANGE PASSWORD %s' % error)
+
+    def changeEmail(self, email):
+        """
+        changes a user's registered email address
+        """
+        #if self.services.has_key(SERVICE_ADMIN):
+        #    return self.services[SERVICE_ADMIN].setEmailAddress(email)
+        #else:
+        d = defer.Deferred()
+        d.addErrback(self._ebDeferredChangeEmailError)
+        self.connectService(SERVICE_ADMIN,1).addCallback(lambda s:s.setEmailAddress(email).chainDeferred(d))
+        return d
+
+    def _ebDeferredChangeEmailError(self, error):
+        log.msg('ERROR IN CHANGE EMAIL %s' % error)
+
+    def changeScreenNameFormat(self, formatted):
+        """
+        changes a user's screen name format
+        note that only the spacing and capitalization can be changed
+        """
+        #if self.services.has_key(SERVICE_ADMIN):
+        #    return self.services[SERVICE_ADMIN].formatScreenName(formatted)
+        #else:
+        d = defer.Deferred()
+        d.addErrback(self._ebDeferredFormatSNError)
+        self.connectService(SERVICE_ADMIN,1).addCallback(lambda s:s.formatScreenName(formatted).chainDeferred(d))
+        return d
+
+    def _ebDeferredFormatSNError(self, error):
+        log.msg('ERROR IN FORMAT SCREEN NAME %s' % error)
+
+    def getFormattedScreenName(self):
+        """
+        retrieves the user's formatted screen name
+        """
+        #if self.services.has_key(SERVICE_ADMIN):
+        #    return self.services[SERVICE_ADMIN].requestFormattedScreenName()
+        #else:
+        d = defer.Deferred()
+        d.addErrback(self._ebDeferredGetSNError)
+        self.connectService(SERVICE_ADMIN,1).addCallback(lambda s:s.requestFormattedScreenName().chainDeferred(d))
+        return d
+
+    def _ebDeferredGetSNError(self, error):
+        log.msg('ERROR IN SCREEN NAME RETRIEVAL %s' % error)
+
+    def getEmailAddress(self):
+        """
+        retrieves the user's registered email address
+        """
+        #if self.services.has_key(SERVICE_ADMIN):
+        #    return self.services[SERVICE_ADMIN].requestEmailAddress()
+        #else:
+        d = defer.Deferred()
+        d.addErrback(self._ebDeferredGetEmailError)
+        self.connectService(SERVICE_ADMIN,1).addCallback(lambda s:s.requestEmailAddress().chainDeferred(d))
+        return d
+
+    def _ebDeferredGetEmailError(self, error):
+        log.msg('ERROR IN EMAIL ADDRESS RETRIEVAL %s' % error)
+
+    def confirmAccount(self):
+        """
+        requests email to be sent to registered address for confirmation
+        of account
+        """
+        #if self.services.has_key(SERVICE_ADMIN):
+        #    return self.services[SERVICE_ADMIN].requestAccountConfirm()
+        #else:
+        d = defer.Deferred()
+        d.addErrback(self._ebDeferredConfirmAccountError)
+        self.connectService(SERVICE_ADMIN,1).addCallback(lambda s:s.requestAccountConfirm().chainDeferred(d))
+        return d
+
+    def _ebDeferredConfirmAccountError(self, error):
+        log.msg('ERROR IN ACCOUNT CONFIRMATION RETRIEVAL %s' % error)
+
+    def sendBuddyIcon(self, iconData, iconLen):
+        """
+        uploads a buddy icon
+        """
+        d = defer.Deferred()
+        d.addErrback(self._ebDeferredSendBuddyIconError)
+        self.connectService(SERVICE_SSBI,1).addCallback(lambda s:s.uploadIcon(iconData, iconLen).chainDeferred(d))
+        return d
+
+    def _ebDeferredSendBuddyIconError(self, error):
+        log.msg('ERROR IN SEND BUDDY ICON %s' % error)
+
+    def retrieveBuddyIcon(self, contact, hash, flags):
+        """
+        retrieves a buddy icon
+        """
+        d = defer.Deferred()
+        d.addErrback(self._ebDeferredRetrieveBuddyIconError)
+        self.connectService(SERVICE_SSBI,1).addCallback(lambda s:s.retrieveAIMIcon(contact, hash, flags).chainDeferred(d))
+        return d
+
+    def _ebDeferredRetrieveBuddyIconError(self, error):
+        log.msg('ERROR IN RETRIEVE BUDDY ICON %s' % error)
+
     def getMetaInfo(self, user, id):
         #if user.
         #reqdata = struct.pack("I",int(self.username))+'\xd0\x07\x08\x00\xba\x04'+struct.pack("I",int(user))
@@ -1451,16 +1926,16 @@ class BOSConnection(SNACBased):
 
     #def _cbGetMetaInfo(self, snac):
     #    nick,first,last,email = self.parseBasicInfo(snac[5][16:])
-#	return [nick,first,last,email]
+#     return [nick,first,last,email]
 
     def requestOffline(self):
         """
         request offline messages
         """
-	reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3c\x00\x02\x00'
+        reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3c\x00\x02\x00'
         tlvs = TLV(0x01, reqdata)
         return self.sendSNACnr(0x15, 0x02, tlvs)
-
+  
     #def _cbreqOffline(self, snac):
         #print "arg"
 
@@ -1492,9 +1967,9 @@ class BOSConnection(SNACBased):
         """
         pass
 
-    def gotAuthorizationRespons(self, uin, success):
+    def gotAuthorizationResponse(self, uin, success):
         """
-        called when a user sends an authorization respons
+        called when a user sends an authorization response
         """
         pass
 
@@ -1514,7 +1989,7 @@ class BOSConnection(SNACBased):
         """
         called when a buddy is added
         """
-	pass
+        pass
 
     def updateBuddy(self, user):
         """
@@ -1581,11 +2056,37 @@ class BOSConnection(SNACBased):
         """
         pass
 
+    def chatInvitationAccepted(self, user):
+        """
+        called when a chat invitation we issued is accepted
+        """
+        pass
+
     def receiveSendFileRequest(self, user, file, description, cookie):
         """
         called when someone tries to send a file to us
         """
         pass
+
+    def emailNotificationReceived(self, addr, url, unreadmsgs, hasunread):
+        """
+        called when the status of our email account changes
+        """
+        pass
+
+    def receivedSelfInfo(self, user):
+        """
+        called when we receive information about ourself
+        """
+        pass
+
+    def requestBuddyIcon(self, iconhash):
+        """
+        called when the server wants our buddy icon
+        """
+        pass
+
+
 
 class OSCARService(SNACBased):
     def __init__(self, bos, cookie, d = None):
@@ -1605,12 +2106,12 @@ class OSCARService(SNACBased):
             self.d.callback(self)
             self.d = None
 
+
 class ChatNavService(OSCARService):
     snacFamilies = {
-        0x01:(3, 0x0010, 0x059b),
-        0x0d:(1, 0x0010, 0x059b)
+        0x01:(3, 0x0010, 0x0629),
+        0x0d:(1, 0x0010, 0x0629)
     }
-
     def oscar_01_07(self, snac):
         # rate info
         self.sendSNACnr(0x01, 0x08, '\000\001\000\002\000\003\000\004\000\005')
@@ -1621,7 +2122,7 @@ class ChatNavService(OSCARService):
 
     def getChatInfo(self, exchange, name, instance):
         d = defer.Deferred()
-        d.addErrback(self._ebDeferredRequestSSIError)
+        #d.addErrback(self._ebDeferredRequestSSIError)
         self.sendSNAC(0x0d,0x04,struct.pack('!HB',exchange,len(name)) + \
                       name + struct.pack('!HB',instance,2)). \
             addCallback(self._cbGetChatInfo, d)
@@ -1638,9 +2139,11 @@ class ChatNavService(OSCARService):
         info = (exchange,fullName,instance,shortName,inviteTime)
         d.callback(info)
 
-    def createChat(self, shortName):
+    def createChat(self, shortName, exchange):
         #d = defer.Deferred()
-        data = '\x00\x04\x06create\xff\xff\x01\x00\x03'
+        data = struct.pack('!H',exchange)
+        # '\x00\x04'
+        data = data + '\x06create\xff\xff\x01\x00\x03'
         data = data + TLV(0xd7, 'en')
         data = data + TLV(0xd6, 'us-ascii')
         data = data + TLV(0xd3, shortName)
@@ -1654,10 +2157,11 @@ class ChatNavService(OSCARService):
         #d.callback((exchange, fullName, instance))
         return exchange, fullName, instance
 
+
 class ChatService(OSCARService):
     snacFamilies = {
-        0x01:(3, 0x0010, 0x059b),
-        0x0E:(1, 0x0010, 0x059b)
+        0x01:(3, 0x0010, 0x0629),
+        0x0E:(1, 0x0010, 0x0629)
     }
     def __init__(self,bos,cookie, d = None):
         OSCARService.__init__(self,bos,cookie,d)
@@ -1718,14 +2222,445 @@ class ChatService(OSCARService):
         self.bos.chatReceiveMessage(self,user,message)
 
     def sendMessage(self,message):
+        log.msg("Sending chat message... I hope.")
         tlvs=TLV(0x02,"us-ascii")+TLV(0x03,"en")+TLV(0x01,message)
-        self.sendSNAC(0x0e,0x05,
-                      "\x46\x30\x38\x30\x44\x00\x63\x00\x00\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00\x05"+
-                      struct.pack("!H",len(tlvs))+
-                      tlvs)
+        data = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
+        data = data + "\x00\x03" # message channel 3
+        data = data + TLV(1, '') # this is for a chat room
+        data = data + TLV(6, '') # reflect message back to us
+        data = data + TLV(5, tlvs) # our actual message data
+        self.sendSNACnr(0x0e, 0x05, data)
+        #self.sendSNAC(0x0e,0x05,
+        #              "\x46\x30\x38\x30\x44\x00\x63\x00\x00\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00\x05"+
+        #              struct.pack("!H",len(tlvs))+
+        #              tlvs)
 
     def leaveChat(self):
         self.disconnect()
+
+
+class DirectoryService(OSCARService):
+    snacFamilies = {
+        0x01:(3, 0x0010, 0x0629),
+        0x0f:(1, 0x0010, 0x0629)
+    }
+
+    def oscar_01_07(self,snac):
+        self.sendSNAC(0x01,0x08,"\000\001\000\002\000\003\000\004\000\005")
+        self.clientReady()
+
+    def sendDirectorySearchByEmail(self, email):
+        #if email.
+        # 00 1c 00 08 75 73 2d 61 73 63 69 69 00 0a 00 02 00 01 00 05
+        # .  .  .  .  u  s  -  a  s  c  i  i  .  .  .  .  .  .  .  .
+
+        # 00 13 6a 61 64 65 73 74 6f 72 6d 40 6e 63 2e 72 72 2e 63 6f 6d
+        # .  .  j  a  d  e  s  t  o  r  m  @  n  c  .  r  r  .  c  o  m
+
+        # 00 0a = standard
+        # 00 02 = standard
+        # 00 01 =
+        # 00 05 = (email address?)
+        # 00 13 = length
+
+        return self.sendSNAC(0x0f, 0x02, '\x00\x1c\x00\x08us-ascii\x00\x0a\x00\x02\x00\x01'+TLV(0x05, email)).addCallback(self._cbGetDirectoryInfo).addErrback(self._cbGetDirectoryError)
+
+    def sendDirectorySearchByNameAddr(self, first=None, middle=None, last=None, maiden=None, nickname=None, address=None, city=None, state=None, zip=None, country=None):
+        # Must give at least a first or last name, all others optional
+
+        # 00 1c 00 08 75 73 2d 61 73 63 69 69 00 0a 00 02 00 00 00 01
+        # .  .  .  .  u  s  -  a  s  c  i  i  .  .  .  .  .  .  .  .
+
+        # 00 06 44 61 6e 69 65 6c 00 02 00 09 48 65 6e 6e 69 6e 67 65 72
+        # .  .  D  a  n  i  e  l  .  .  .  .  H  e  n  n  i  n  g  e  r
+
+        # 00 0a = standard
+        # 00 02 = standard
+        # 00 00 =
+
+        # 00 01 = (first name?)
+        # 00 06 = length
+
+        # 00 02 = (last name?)
+        # 00 09 = length
+
+
+        # All fields entered:
+
+        # 00 1c 00 08 75 73 2d 61 73 63 69 69 00 0a 00 02 00 00 00 01
+        # .  .  .  .  u  s  -  a  s  c  i  i  .  .  .  .  .  .  .  .
+
+        # 00 06 44 61 6e 69 65 6c 00 02 00 09 48 65 6e 6e 69 6e 67 65 72
+        # .  .  D  a  n  i  e  l  .  .  .  .  H  e  n  n  i  n  g  e  r
+
+        # 00 03 00 04 41 64 61 6d 00 04 00 0a 48 65 6e 6e 69 63 67 74 6f
+        # .  .  .  .  A  d  a  m  .  .  .  .  H  e  n  n  i  n  g  t  o
+
+        # 6e 00 06 00 02 55 53 00 07 00 02 4e 43 00 08 00 06 47 61 72 6e
+        # n  .  .  .  .  U  S  .  .  .  .  N  C  .  .  .  .  G  a  r  n
+
+        # 65 72 00 0c 00 05 4e 69 6e 6a 61 00 0d 00 05 32 37 35 32 39 00
+        # e  r  .  .  .  .  N  i  n  j  a  .  .  .  .  2  7  5  2  9  .
+
+        # 21 00 13 31 30 35 20 42 72 6f 6f 6b 20 52 6f 63 6b 20 4c 61 6e
+        # .  .  .  1  0  5     B  r  o  o  k     R  o  c  k     L  a  n
+
+        # 65
+        # e
+
+        # 00 0a = standard
+        # 00 02 = standard
+        # 00 00 = unknown  0 for multi search, 1 for single entity search
+
+        # then, type, length, value pairs
+        # types
+        # 00 01 = first name
+        # 00 02 = last name
+        # 00 03 = middle name
+        # 00 04 = maiden name
+        # 00 05 = email address
+        # 00 06 = country (ab)
+        # 00 07 = state (ab)
+        # 00 08 = city
+        # 00 0b = interest
+        # 00 0c = nickname
+        # 00 0d = zip code
+        # 00 21 = street address
+
+        snacData = '\x00\x1c\x00\x08us-ascii\x00\x0a\x00\x02\x00\x00'
+        if (first): snacData = snacData + TLV(0x01, first)
+        if (last): snacData = snacData + TLV(0x02, last)
+        if (middle): snacData = snacData + TLV(0x03, middle)
+        if (maiden): snacData = snacData + TLV(0x04, maiden)
+        if (country): snacData = snacData + TLV(0x06, country)
+        if (state): snacData = snacData + TLV(0x07, state)
+        if (city): snacData = snacData + TLV(0x08, city)
+        if (nickname): snacData = snacData + TLV(0x0c, nickname)
+        if (zip): snacData = snacData + TLV(0x0d, zip)
+        if (address): snacData = snacData + TLV(0x21, address)
+        return self.sendSNAC(0x0f, 0x02, snacData).addCallback(self._cbGetDirectoryInfo).addErrback(self._cbGetDirectoryError)
+
+    def sendDirectorySearchByInterest(self, interest):
+        # official list of interests pulled from server
+
+        # 00 1c 00 08 75 73 2d 61 73 63 69 69 00 0a 00 02 00 01 00 0b
+        # .  .  .  .  u  s  -  a  s  c  i  i  .  .  .  .  .  .  .  .
+
+        # 00 09 45 64 75 63 61 74 69 6f 6e
+        # .  .  E  d  u  c  a  t  i  o  n
+
+        # 00 0a = standard
+        # 00 02 = standard
+        # 00 01 =
+        # 00 0b = (interest?)
+        # 00 09 = length
+
+        return self.sendSNAC(0x0f, 0x02, '\x00\x1c\x00\x08us-ascii\x00\x0a\x00\x02\x00\x01'+TLV(0x0b, interest)).addCallback(self._cbGetDirectoryInfo).addErrback(self._cbGetDirectoryError)
+
+    def _cbGetDirectoryInfo(self, snac):
+        #\x00\x07\x00\x00  if error?
+        #\x00\x05\x00\x00  seems to be success
+        #Got directory info [15, 3, 0, 0, 1L, '\x00\x05\x00\x00\x00\x01\x00\x01\x00\t\x00\x0cthejadestorm']
+        #Received directory info [15, 3, 0, 0, 1L, '\x00\x07\x00\x00\x00\x01\x00\x01\x00\x04\x00\x12http://www.aol.com']
+        log.msg("Received directory info %s" % snac)
+        results = []
+        snacData = snac[5]
+        status,foo,num = struct.unpack('!HHH', snacData[0:6])
+        if status == 0x07:
+            # We have an error, typically this seems to mean directory server is unavailable, for now, return empty results
+            log.msg("We received an error, returning empty results")
+            return results
+        elif status == 0x05:
+            # We're good
+            pass
+        else:
+            # Uhm.. what?  For not, return empty results
+            log.msg("Directory info request returned status %s" % str(hex(status)))
+            return results
+        numresults = int(num)
+        log.msg("Got directory info, %d results" % (numresults))
+        cnt = 1
+        data = snacData[6:]
+        while cnt <= numresults:
+            log.msg("  Data %s" % (repr(data)))
+            numpieces = int(struct.unpack('>H', data[0:2])[0])
+            tlvs,data = readTLVs(data[2:], count=numpieces)
+            log.msg("  Entry %s" % (repr(tlvs)))
+            result = {}
+            if tlvs.has_key(0x0001): result['first'] = tlvs[0x0001]
+            if tlvs.has_key(0x0002): result['last'] = tlvs[0x0002]
+            if tlvs.has_key(0x0003): result['middle'] = tlvs[0x0003]
+            if tlvs.has_key(0x0004): result['maiden'] = tlvs[0x0004]
+            if tlvs.has_key(0x0005): result['email'] = tlvs[0x0005]
+            if tlvs.has_key(0x0006): result['country'] = tlvs[0x0006]
+            if tlvs.has_key(0x0007): result['state'] = tlvs[0x0007]
+            if tlvs.has_key(0x0008): result['city'] = tlvs[0x0008]
+            if tlvs.has_key(0x0009): result['screenname'] = tlvs[0x0009]
+            if tlvs.has_key(0x000b): result['interest'] = tlvs[0x000b]
+            if tlvs.has_key(0x000c): result['nickname'] = tlvs[0x000c]
+            if tlvs.has_key(0x000d): result['zip'] = tlvs[0x000d]
+            if tlvs.has_key(0x001c): result['region'] = tlvs[0x001c]
+            if tlvs.has_key(0x0021): result['address'] = tlvs[0x0021]
+            results.append(result)
+            cnt = cnt + 1
+
+        self.disconnect()
+        return results
+
+    def _cbGetDirectoryError(self, error):
+        log.msg("Got directory error %s" % error)
+        return error
+
+    def sendInterestsRequest(self):
+        return self.sendSNAC(0x0f, 0x04, "").addCallback(self._cbGetInterests).addErrback(self._cbGetInterestsError)
+
+    def _cbGetInterests(self, snac):
+        log.msg("Got interests %s" % snac)
+        pass
+
+    def _cbGetInterestsError(self, error):
+        log.msg("Got interests error %s" % error)
+        pass
+
+    def disconnect(self):
+        """
+        send the disconnect flap, and sever the connection
+        """
+        self.sendFLAP('', 0x04)
+        self.transport.loseConnection()
+
+
+class EmailService(OSCARService):
+    snacFamilies = {
+        0x01:(3, 0x0010, 0x0629),
+        0x18:(1, 0x0010, 0x0629)
+    }
+
+    def oscar_01_07(self,snac):
+        self.sendSNAC(0x01,0x08,"\000\001\000\002\000\003\000\004\000\005")
+        cookie1 = "\xb3\x80\x9a\xd8\x0d\xba\x11\xd5\x9f\x8a\x00\x60\xb0\xee\x06\x31"
+        cookie2 = "\x5d\x5e\x17\x08\x55\xaa\x11\xd3\xb1\x43\x00\x60\xb0\xfb\x1e\xcb"
+        self.sendSNAC(0x18, 0x06, "\x00\x02"+cookie1+cookie2)
+        self.sendEmailRequest()
+        self.nummessages = 0
+        self.clientReady()
+
+    def oscar_18_07(self,snac):
+        snacData = snac[3]
+        cookie1 = snacData[8:16]
+        cookie2 = snacData[16:24]
+        cnt = int(struct.unpack('>H', snacData[24:26])[0])
+        tlvs,foo = readTLVs(snacData[26:], count=cnt)
+        #0x80 = number of unread messages
+        #0x81 = have new messages
+        #0x82 = domain
+        #0x84 = flag
+        #0x07 = url to access
+        #0x09 = username
+        #0x1b = something about gateway
+        #0x1d = some odd string
+        #0x05 = apparantly an alert title
+        #0x0d = apparantly an alert url
+        domain = tlvs[0x82]
+        username = tlvs[0x09]
+        url = tlvs[0x07]
+        unreadnum = int(struct.unpack('>H', tlvs[0x80])[0])
+        hasunread = int(struct.unpack('B', tlvs[0x81])[0])
+        log.msg("received email notify: tlvs = %s" % (str(tlvs)))
+        self.bos.emailNotificationReceived('@'.join([username,domain]),
+              str(url), unreadnum, hasunread)
+
+    def sendEmailRequest(self):
+        log.msg("Activating email notifications")
+        self.sendSNAC(0x18, 0x16, "\x02\x04\x00\x00\x00\x04\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00")
+
+    def disconnect(self):
+        """
+        send the disconnect flap, and sever the connection
+        """
+        self.sendFLAP('', 0x04)
+        self.transport.loseConnection()
+
+
+class AdminService(OSCARService):
+    snacFamilies = {
+        0x01:(3, 0x0010, 0x0629),
+        0x07:(1, 0x0010, 0x0629)
+    }
+
+    def oscar_01_07(self,snac):
+        self.sendSNAC(0x01,0x08,"\000\001\000\002\000\003\000\004\000\005")
+        self.clientReady()
+
+    def requestFormattedScreenName(self):
+        return self.sendSNAC(0x07, 0x02, TLV(0x01, "")).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
+
+    def requestEmailAddress(self):
+        return self.sendSNAC(0x07, 0x02, TLV(0x11, "")).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
+
+    def requestRegistrationStatus(self):
+        return self.sendSNAC(0x07, 0x02, TLV(0x13, "")).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
+
+    def changePassword(self, oldpassword, newpassword):
+        return self.sendSNAC(0x07, 0x04, TLV(0x02, newpassword)+TLV(0x12, oldpassword)).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
+
+    def formatScreenName(self, fmtscreenname):
+        """ Note that the new screen name must be the same as the official
+        one with only changes to spacing and capitalization """
+        return self.sendSNAC(0x07, 0x04, TLV(0x01, fmtscreenname)).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
+
+    def setEmailAddress(self, email):
+        return self.sendSNAC(0x07, 0x04, TLV(0x11, email)).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
+
+    def _cbInfoResponse(self, snac):
+        """ This is sent for both changes and requests """
+        log.msg("Got info change %s" % (snac))
+        snacData = snac[5]
+        perms = int(struct.unpack(">H", snacData[0:2])[0])
+        tlvcnt = int(struct.unpack(">H", snacData[2:4])[0])
+        tlvs,foo = readTLVs(snacData[4:], count=tlvcnt)
+        log.msg("TLVS are %s" % str(tlvs))
+        sn = tlvs.get(0x01, None)
+        url = tlvs.get(0x04, None)
+        error = tlvs.get(0x08, None)
+        email = tlvs.get(0x11, None)
+        if not error:
+            errorret = None
+        elif error == '\x00\x01':
+            errorret = (error, "Unable to format screen name because the requested screen name differs from the original.")
+        elif error == '\x00\x06':
+            #errorret = (error, "Unable to format screen name because the requested screen name ends in a space.")
+            errorret = (error, "Unable to format screen name because the requested screen name is too long.")
+        elif error == '\x00\x0b':
+            #I get the above on a 'too long' screen name.. so what's this really?
+            errorret = (error, "Unable to format screen name because the requested screen name is too long.")
+        elif error == '\x00\x1d':
+            errorret = (error, "Unable to change email address because there is already a request pending for this screen name.")
+        elif error == '\x00\x21':
+            errorret = (error, "Unable to change email address because the given address has too many screen names associated with it.")
+        elif error == '\x00\x23':
+            errorret = (error, "Unable to change email address because the given address is invalid.")
+        else:
+            errorret = (error, "Unknown error code %d" % int(error))
+        self.disconnect()
+        return (perms, sn, url, errorret, email)
+
+    def _cbInfoResponseError(self, error):
+        log.msg("GOT INFO CHANGE ERROR %s" % error)
+        self.disconnect()
+        pass
+
+    def requestAccountConfirm(self):
+        """ Causes an email message to be sent to the registered email
+        address.  By following the instructions in the email, you can
+        get the trial/unconfirmed flag removed from your account. """
+        return self.sendSNAC(0x07, 0x06, "").addCallback(self._cbAccountConfirm).addErrback(self._cbAccountConfirmError)
+
+    def _cbAccountConfirm(self, snac):
+        log.msg("Got account confirmation %s" % snac)
+        status = int(struct.unpack(">H", snac[5][0:2])[0])
+        # Returns whether it failed or not
+        self.disconnect()
+        if (status == "\x00\x13"):
+            return 1
+        else:
+            return 0
+
+    def _cbAccountConfirmError(self, error):
+        log.msg("GOT ACCOUNT CONFIRMATION ERROR %s" % error)
+        self.disconnect()
+
+    def disconnect(self):
+        """
+        send the disconnect flap, and sever the connection
+        """
+        self.sendFLAP('', 0x04)
+        self.transport.loseConnection()
+
+
+
+class SSBIService(OSCARService):
+    snacFamilies = {
+        0x01:(3, 0x0010, 0x0629),
+        0x10:(1, 0x0010, 0x0629)
+    }
+
+    def oscar_01_07(self,snac):
+        self.sendSNAC(0x01,0x08,"\000\001\000\002\000\003\000\004\000\005")
+        self.clientReady()
+
+    def uploadIcon(self, iconData, iconLen):
+        return self.sendSNAC(0x10, 0x02, struct.pack('!HH', 0x0001, iconLen)+iconData).addCallback(self._cbIconResponse).addErrback(self._cbIconResponseError)
+
+    def _cbIconResponse(self, snac):
+        log.msg("GOT ICON RESPONSE: %s" % str(snac))
+        #\x05\x00\x00\x00\x00 - bad format?
+        #\x04\x00\x00\x00\x00 - too large?
+        #\x00\x00\x01\x01\x10 - ok, this is a hash, last one is length
+
+        #checksumlen = (struct.unpack('!B', snac[4]))[0]
+        #checksum = snac[1:1+checksumlen]
+        self.disconnect()
+        #return checksum
+        return "Yeah ok"
+
+    def _cbIconResponseError(self, error):
+        log.msg("GOT UPLOAD ICON ERROR %s" % error)
+        self.disconnect()
+
+    def retrieveAIMIcon(self, contact, iconhash, iconflags):
+        log.msg("Requesting icon for %s with hash %s" % (contact, binascii.hexlify(iconhash)))
+        return self.sendSNAC(0x10, 0x04, struct.pack('!B', len(contact))+contact+"\x01\x00\x01"+struct.pack('!B', iconflags)+struct.pack('!B', len(iconhash))+iconhash).addCallback(self._cbAIMIconRequest).addErrback(self._cbAIMIconRequestError)
+
+    def _cbAIMIconRequest(self, snac):
+        #log.msg("Got Icon Request (AIM): %s" % (str(snac)))
+        #\n
+        #arlydwycka
+        #\x00\x01
+        #\x01
+        #\x10
+        #\xc7\x17`eF\x14\xc8\xd2l\xec\xf7\x9d\xcd\xe5\xde\x06
+        #\x00\x00
+        v = snac[5]
+        scrnnamelen = int((struct.unpack('!B', v[0]))[0])
+        #log.msg("scrnnamelen: %d" % scrnnamelen)
+        scrnname = v[1:1+scrnnamelen]
+        #log.msg("scrnname: %s" % scrnname)
+        p = 1+scrnnamelen
+        flags,iconcsumtype,iconcsumlen = struct.unpack('!HBB', v[p:p+4])
+        iconcsumlen = int(iconcsumlen)
+        p = p+4
+        #log.msg("Where are we: %s" % binascii.hexlify(v[p:]))
+        #\xc7\x17`eF\x14\xc8\xd2l\xec\xf7\x9d\xcd\xe5\xde\x06\x00\x00
+        iconcsum = v[p:p+iconcsumlen]
+        #log.msg("iconhash: %s" % binascii.hexlify(iconhash))
+        p = p+iconcsumlen
+        #log.msg("Where are we now: %s" % binascii.hexlify(v[p:]))
+        iconlen = int((struct.unpack('!H', v[p:p+2]))[0])
+        #log.msg("iconlen: %d" % iconlen)
+        p = p + 2
+        #log.msg("Where are we now: %s" % binascii.hexlify(v[p:]))
+        #log.msg("The icon we can see is: %s" % binascii.hexlify(v[p:p+iconlen]))
+        log.msg("Got Icon Request (AIM): %s, %s, %d" % (scrnname, binascii.hexlify(iconcsum), iconlen))
+        if iconlen > 0 and iconlen != 90:
+            icondata = v[p:p+iconlen]
+        else:
+            icondata = None
+        self.disconnect()
+        return (scrnname,iconcsumtype,iconcsum,iconlen,icondata)
+
+    def _cbAIMIconRequestError(self, error):
+        log.msg("GOT AIM ICON REQUEST ERROR %s" % error)
+        self.disconnect()
+
+    def disconnect(self):
+        """
+        send the disconnect flap, and sever the connection
+        """
+        self.sendFLAP('', 0x04)
+        self.transport.loseConnection()
+
+
 
 class OscarAuthenticator(OscarConnection):
     BOSClass = BOSConnection
@@ -1774,19 +2709,22 @@ class OscarAuthenticator(OscarConnection):
 
     def oscar_Key(self,data):
         snac=readSNAC(data[1])
+        if not snac:
+            log.msg("Illegal SNAC data received in oscar_Key: %s" % data)
+            return
         key=snac[5][2:]
         encpass=encryptPasswordMD5(self.password,key)
         self.sendFLAP(SNAC(0x17,0x02,0,
                            TLV(TLV_USERNAME,self.username)+
                            TLV(TLV_PASSWORD,encpass)+
                            TLV(0x004C, '')+ # unknown
-                           TLV(TLV_CLIENTNAME,"AOL Instant Messenger (SM), version 4.8.2790/WIN32")+
+                           TLV(TLV_CLIENTNAME,"AOL Instant Messenger (SM), version 5.1.3036/WIN32")+
                            TLV(0x0016,"\x01\x09")+
-                           TLV(TLV_CLIENTMAJOR,"\000\004")+
-                           TLV(TLV_CLIENTMINOR,"\000\010")+
+                           TLV(TLV_CLIENTMAJOR,"\000\005")+
+                           TLV(TLV_CLIENTMINOR,"\000\001")+
                            TLV(0x0019,"\000\000")+
-                           TLV(TLV_CLIENTSUB,"\x0A\xE6")+
-                           TLV(0x0014,"\x00\x00\x00\xBB")+
+                           TLV(TLV_CLIENTSUB,"\x0B\xDC")+
+                           TLV(0x0014,"\x00\x00\x00\xD2")+
                            TLV(TLV_LANG,"en")+
                            TLV(TLV_COUNTRY,"us")+
                            TLV(TLV_USESSI,"\001")))
@@ -1794,6 +2732,9 @@ class OscarAuthenticator(OscarConnection):
 
     def oscar_Cookie(self,data):
         snac=readSNAC(data[1])
+        if not snac:
+            log.msg("Illegal SNAC data received in oscar_Cookie: %s" % data)
+            return
         if self.icq:
             i=snac[5].find("\000")
             snac[5]=snac[5][i:]
@@ -1810,10 +2751,16 @@ class OscarAuthenticator(OscarConnection):
         elif tlvs.has_key(8):
             errorcode=tlvs[8]
             errorurl=tlvs[4]
-            if errorcode=='\000\030':
-                error="You are attempting to sign on again too soon.  Please try again later."
-            elif errorcode=='\000\005':
-                error="Invalid Username or Password."
+            if errorcode=='\x00\x05':
+                error="Incorrect username or password."
+            elif errorcode=='\x00\x11':
+                error="Your account is currently suspended."
+            elif errorcode=='\x00\x14':
+                error="The instant messenger server is temporarily unavailable"
+            elif errorcode=='\x00\x18':
+                error="You have been connecting and disconnecting too frequently. Wait ten minutes and try again. If you continue to try, you will need to wait even longer."
+            elif errorcode=='\x00\x1c':
+                error="The client version you are using is too old.  Please contact the maintainer of this software if you see this message so that the problem can be resolved."
             else: error=repr(errorcode)
             self.error(error,errorurl)
         else:
@@ -1839,11 +2786,19 @@ FLAP_CHANNEL_DATA = 0x02
 FLAP_CHANNEL_ERROR = 0x03
 FLAP_CHANNEL_CLOSE_CONNECTION = 0x04
 
+SERVICE_ADMIN = 0x07
 SERVICE_CHATNAV = 0x0d
 SERVICE_CHAT = 0x0e
+SERVICE_DIRECTORY = 0x0f
+SERVICE_SSBI = 0x10
+SERVICE_EMAIL = 0x18
 serviceClasses = {
+    SERVICE_ADMIN:AdminService,
     SERVICE_CHATNAV:ChatNavService,
-    SERVICE_CHAT:ChatService
+    SERVICE_CHAT:ChatService,
+    SERVICE_DIRECTORY:DirectoryService,
+    SERVICE_SSBI:SSBIService,
+    SERVICE_EMAIL:EmailService
 }
 TLV_USERNAME = 0x0001
 TLV_CLIENTNAME = 0x0003
@@ -1861,6 +2816,9 @@ TLV_USESSI = 0x004A
 
 # Supports avatars/buddy icons
 CAP_ICON = '\x09\x46\x13\x46\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
+# User is using iChat
+CAP_ICHAT = '\x09\x46\x00\x00\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
+CAP_ICHATAV = '\x09\x46\x01\x05\x4C\x7F\x11\xD1\x82\x22\x44\x45\x45\x53\x54\x00'
 # Supports voice chat
 CAP_VOICE = '\x09\x46\x13\x41\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
 # Supports direct image/direct im
@@ -1879,7 +2837,7 @@ CAP_SEND_LIST = '\x09\x46\x13\x4B\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x0
 CAP_SERV_REL = '\x09\x46\x13\x49\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
 # Allow communication between ICQ and AIM
 CAP_CROSS_CHAT = '\x09\x46\x13\x4D\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
-# Supports UTF-8 encoded messages
+# Supports UTF-8 encoded messages, only used with ICQ
 CAP_UTF = '\x09\x46\x13\x4E\x4C\x7F\x11\xD1\x82\x22\x44\x45\x53\x54\x00\x00'
 # Supports RTF messages
 CAP_RTF = '\x97\xB1\x27\x51\x24\x3C\x43\x34\xAD\x22\xD6\xAB\xF7\x3F\x14\x92'
@@ -2001,5 +2959,21 @@ MOTDS = dict( [
     (0x01, "Mandatory upgrade needed notice"),
     (0x02, "Advisable upgrade notice"),
     (0x03, "AIM/ICQ service system announcements"),
-    (0x04, "Standart notice"),
+    (0x04, "Standard notice"),
     (0x06, "Some news from AOL service") ] )
+
+###
+# SSI Types
+###
+AIM_SSI_TYPE_BUDDY = 0x0000
+AIM_SSI_TYPE_GROUP = 0x0001
+AIM_SSI_TYPE_PERMIT = 0x0002
+AIM_SSI_TYPE_DENY = 0x0003
+AIM_SSI_TYPE_PDINFO = 0x0004
+AIM_SSI_TYPE_PRESENCEPREFS = 0x0005
+AIM_SSI_TYPE_ICQSHORTCUT = 0x0009 # Not sure if this is true
+AIM_SSI_TYPE_IGNORE = 0x000e
+AIM_SSI_TYPE_LASTUPDATE = 0x000f
+AIM_SSI_TYPE_SMS = 0x0010
+AIM_SSI_TYPE_IMPORTTIME = 0x0013
+AIM_SSI_TYPE_ICONINFO = 0x0014
