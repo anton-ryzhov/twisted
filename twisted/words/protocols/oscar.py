@@ -1676,7 +1676,7 @@ class BOSConnection(SNACBased):
         else:
             self.connectionFailed()
 
-    def createChat(self, shortName, exchange):
+    def createChat(self, shortName, exchange=4):
         """
         create a chat room
         """
@@ -2139,7 +2139,7 @@ class ChatNavService(OSCARService):
         info = (exchange,fullName,instance,shortName,inviteTime)
         d.callback(info)
 
-    def createChat(self, shortName, exchange):
+    def createChat(self, shortName, exchange=4):
         #d = defer.Deferred()
         data = struct.pack('!H',exchange)
         # '\x00\x04'
