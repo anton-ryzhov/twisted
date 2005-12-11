@@ -604,19 +604,33 @@ class SNACBased(OscarConnection):
 
 
 class BOSConnection(SNACBased):
+#    snacFamilies = {
+#        0x01:(3, 0x0110, 0x0629),
+#        0x02:(1, 0x0110, 0x0629),
+#        0x03:(1, 0x0110, 0x0629),
+#        0x04:(1, 0x0110, 0x0629),
+#        0x06:(1, 0x0110, 0x0629),
+#        0x08:(1, 0x0104, 0x0001),
+#        0x09:(1, 0x0110, 0x0629),
+#        0x0a:(1, 0x0110, 0x0629),
+#        0x0b:(1, 0x0104, 0x0001),
+#        0x0c:(1, 0x0104, 0x0001),
+#        0x13:(3, 0x0110, 0x0629),
+#        0x15:(1, 0x0110, 0x047c)
+#    }
     snacFamilies = {
-        0x01:(3, 0x0110, 0x0629),
-        0x02:(1, 0x0110, 0x0629),
-        0x03:(1, 0x0110, 0x0629),
-        0x04:(1, 0x0110, 0x0629),
-        0x06:(1, 0x0110, 0x0629),
+        0x01:(4, 0x0110, 0x08e4),
+        0x02:(1, 0x0110, 0x08e4),
+        0x03:(1, 0x0110, 0x08e4),
+        0x04:(1, 0x0110, 0x08e4),
+        0x06:(1, 0x0110, 0x08e4),
         0x08:(1, 0x0104, 0x0001),
-        0x09:(1, 0x0110, 0x0629),
-        0x0a:(1, 0x0110, 0x0629),
-        0x0b:(1, 0x0104, 0x0001),
+        0x09:(1, 0x0110, 0x08e4),
+        0x0a:(1, 0x0110, 0x08e4),
+        0x0b:(1, 0x0104, 0x08e4),
         0x0c:(1, 0x0104, 0x0001),
-        0x13:(3, 0x0110, 0x0629),
-        0x15:(1, 0x0110, 0x047c)
+        0x13:(4, 0x0110, 0x08e4),
+        0x15:(1, 0x0110, 0x08e4)
     }
 
     capabilities = None
@@ -2116,8 +2130,8 @@ class OSCARService(SNACBased):
 
 class ChatNavService(OSCARService):
     snacFamilies = {
-        0x01:(3, 0x0010, 0x0629),
-        0x0d:(1, 0x0010, 0x0629)
+        0x01:(4, 0x0110, 0x08e4),
+        0x0d:(1, 0x0110, 0x08e4)
     }
     def oscar_01_07(self, snac):
         # rate info
@@ -2167,8 +2181,8 @@ class ChatNavService(OSCARService):
 
 class ChatService(OSCARService):
     snacFamilies = {
-        0x01:(3, 0x0010, 0x0629),
-        0x0E:(1, 0x0010, 0x0629)
+        0x01:(4, 0x0110, 0x08e4),
+        0x0e:(1, 0x0110, 0x08e4)
     }
     def __init__(self,bos,cookie, d = None):
         OSCARService.__init__(self,bos,cookie,d)
@@ -2248,8 +2262,8 @@ class ChatService(OSCARService):
 
 class DirectoryService(OSCARService):
     snacFamilies = {
-        0x01:(3, 0x0010, 0x0629),
-        0x0f:(1, 0x0010, 0x0629)
+        0x01:(4, 0x0110, 0x08e4),
+        0x0f:(1, 0x0110, 0x08e4)
     }
 
     def oscar_01_07(self,snac):
@@ -2439,8 +2453,8 @@ class DirectoryService(OSCARService):
 
 class EmailService(OSCARService):
     snacFamilies = {
-        0x01:(3, 0x0010, 0x0629),
-        0x18:(1, 0x0010, 0x0629)
+        0x01:(4, 0x0110, 0x08e4),
+        0x18:(1, 0x0110, 0x08e4)
     }
 
     def oscar_01_07(self,snac):
@@ -2491,8 +2505,8 @@ class EmailService(OSCARService):
 
 class AdminService(OSCARService):
     snacFamilies = {
-        0x01:(3, 0x0010, 0x0629),
-        0x07:(1, 0x0010, 0x0629)
+        0x01:(4, 0x0110, 0x08e4),
+        0x07:(1, 0x0110, 0x08e4)
     }
 
     def oscar_01_07(self,snac):
@@ -2587,9 +2601,13 @@ class AdminService(OSCARService):
 
 
 class SSBIService(OSCARService):
+    #snacFamilies = {
+    #    0x01:(3, 0x0010, 0x0629),
+    #    0x10:(1, 0x0010, 0x0629)
+    #}
     snacFamilies = {
-        0x01:(3, 0x0010, 0x0629),
-        0x10:(1, 0x0010, 0x0629)
+        0x01:(4, 0x0110, 0x08e4),
+        0x10:(1, 0x0110, 0x08e4)
     }
 
     def oscar_01_07(self,snac):
@@ -2702,16 +2720,28 @@ class OscarAuthenticator(OscarConnection):
 #                          TLV(0x0f,"en")+
 #                          TLV(0x0e,"us"),0x01)
 
+#            self.sendFLAP('\000\000\000\001'+
+#                          TLV(0x01,self.username)+
+#                          TLV(0x02,encpass)+
+#                          TLV(0x03,'ICQ Inc. - Product of ICQ (TM).2003a.5.45.1.3777.85')+
+#                          TLV(0x16,"\x01\x0a")+
+#                          TLV(TLV_CLIENTMAJOR,"\x00\x05")+
+#                          TLV(TLV_CLIENTMINOR,"\x00\x2d")+
+#                          TLV(0x19,"\000\001")+
+#                          TLV(TLV_CLIENTSUB,"\x0e\xc1")+
+#                          TLV(0x14,"\x00\x00\x00\x55")+
+#                          TLV(0x0f,"en")+
+#                          TLV(0x0e,"us"),0x01)
             self.sendFLAP('\000\000\000\001'+
                           TLV(0x01,self.username)+
                           TLV(0x02,encpass)+
-                          TLV(0x03,'ICQ Inc. - Product of ICQ (TM).2003a.5.45.1.3777.85')+
+                          TLV(0x03,'ICQBasic')+
                           TLV(0x16,"\x01\x0a")+
-                          TLV(TLV_CLIENTMAJOR,"\x00\x05")+
-                          TLV(TLV_CLIENTMINOR,"\x00\x2d")+
-                          TLV(0x19,"\000\001")+
-                          TLV(TLV_CLIENTSUB,"\x0e\xc1")+
-                          TLV(0x14,"\x00\x00\x00\x55")+
+                          TLV(TLV_CLIENTMAJOR,"\x00\x14")+
+                          TLV(TLV_CLIENTMINOR,"\x00\x22")+
+                          TLV(0x19,"\x00\x00")+
+                          TLV(TLV_CLIENTSUB,"\x09\x11")+
+                          TLV(0x14,"\x00\x00\x04\x3d")+
                           TLV(0x0f,"en")+
                           TLV(0x0e,"us"),0x01)
             self.state="Cookie"
