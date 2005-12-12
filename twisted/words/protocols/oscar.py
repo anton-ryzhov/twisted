@@ -133,6 +133,7 @@ class OSCARUser:
         self.icqLANIPport = None
         self.icqProtocolVersion = None
         self.status = ""
+        self.statusencoding = None
         self.idleTime = 0
         self.iconhash = None
         self.iconflags = None
@@ -232,18 +233,19 @@ class OSCARUser:
                             availlen = (struct.unpack('!H', v[4:6]))[0]
                             self.status = v[6:6+availlen]
                             pos = 6+availlen
-                            hasencoding = (struct.unpack('!H',v[pos:pos+2]))[0]
-                            pos = pos+2
-                            self.statusencoding = None
-                            if hasencoding == 0x0001:
-                                enclen = (struct.unpack('!HH',v[pos:pos+4]))[1]
-                                self.statusencoding = v[pos+4:pos+4+enclen]
+                            if pos < extlen+4:
+                                hasencoding = (struct.unpack('!H',v[pos:pos+2]))[0]
+                                pos = pos+2
+                                if hasencoding == 0x0001:
+                                    enclen = (struct.unpack('!HH',v[pos:pos+4]))[1]
+                                    self.statusencoding = v[pos+4:pos+4+enclen]
                             log.msg("   extracted status message: %s"%(self.status))
                             if self.statusencoding:
                                 log.msg("   status message encoding: %s"%(str(self.statusencoding)))
                     else:
                         log.msg("   unknown extended status type: %d\ndata: %s"%(ord(v[1]), repr(v[:ord(v[3])+4])))
-                    v=v[ord(v[3])+4:]
+                    #v=v[ord(v[3])+4:]
+                    v=v[extlen+4:]
             elif k == 0x001e: # unknown
                 pass
             elif k == 0x001f: # unknown
