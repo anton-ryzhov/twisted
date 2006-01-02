@@ -81,7 +81,7 @@ def readTLVs(data,count=None):
         head=struct.unpack("!HH",data[:4])
         dict[head[0]]=data[4:4+head[1]]
         data=data[4+head[1]:]
-    if not count:
+    if count == None:
         return dict
     return dict,data
 
@@ -650,21 +650,21 @@ class BOSConnection(SNACBased):
         if not self.capabilities:
             self.capabilities = [CAP_CHAT]
 
-    def parseUser(self,data,count=None):
+    def parseUser(self,data,wantRest=0):
         l=ord(data[0])
         name=data[1:1+l]
-        warn,foo=struct.unpack("!HH",data[1+l:5+l])
+        warn,tlvcnt=struct.unpack("!HH",data[1+l:5+l])
         warn=int(warn/10)
-        tlvs=data[5+l:]
-        if count:
-            tlvs,rest = readTLVs(tlvs,foo)
-        else:
-            tlvs,rest = readTLVs(tlvs), None
+        #if count == None:
+        #    tlvs,rest = readTLVs(data[5+l:]), None
+        #else:
+        #    tlvs,rest = readTLVs(data[5+l:],tlvcnt)
+        tlvs,rest = readTLVs(data[5+l:],tlvcnt)
         u = OSCARUser(name, warn, tlvs)
-        if rest == None:
-            return u
-        else:
+        if wantRest:
             return u, rest
+        else:
+            return u
 
     def parseMoreInfo(self, data):
         # why did i have this here and why did dsh remove it
@@ -1004,9 +1004,12 @@ class BOSConnection(SNACBased):
         data = snac[3]
         cookie, data = data[:8], data[8:]
         channel = struct.unpack('!H',data[:2])[0]
+        log.msg("channel = %d" % (channel))
         data = data[2:]
         user, data = self.parseUser(data, 1)
+        log.msg("user = %s, data = %s" % (user, binascii.hexlify(data)))
         tlvs = readTLVs(data)
+        log.msg("tlvs = %s" % (tlvs))
         if channel == 1: # message
             flags = []
             multiparts = []
@@ -1124,17 +1127,33 @@ class BOSConnection(SNACBased):
                     messageStringLength = struct.unpack("<H", v[6:8])[0]
                     messageString = v[8:8+messageStringLength]
                     message = [messageString]
+                    messageParts = re.split('\xfe', messageString)
+                    log.msg("messageParts = %s" % (messageParts))
+
                     #log.msg("type = %d" % (messageType))
                     #log.msg("uin = %s" % (uin))
                     #log.msg("flags = %d" % (messageFlags))
                     #log.msg("strlen = %d" % (messageStringLength))
                     #log.msg("msg = %s" % (messageString))
                     if messageType == 0x01:
-                        # old style message
+                        # old style plain text message
+                        log.msg("received plain text message")
                         flags = []
                         multiparts = []
                         if messageStringLength > 0: multiparts.append(tuple(message))
                         self.receiveMessage(user, multiparts, flags)
+                    elif messageType == 0x02:
+                        # chat request message
+                        log.msg("received chat request message")
+                        pass
+                    elif messageType == 0x03:
+                        # file request/file ok message
+                        log.msg("received file request message")
+                        pass
+                    elif messageType == 0x04:
+                        # url message
+                        log.msg("received url message")
+                        pass
                     elif messageType == 0x06:
                         # authorization request
                         self.gotAuthorizationRequest(uin)
@@ -1144,6 +1163,58 @@ class BOSConnection(SNACBased):
                     elif messageType == 0x08:
                         # authorization ok
                         self.gotAuthorizationResponse(uin, True)
+                    elif messageType == 0x09:
+                        # message from oscar server
+                        log.msg("received oscar server message")
+                        pass
+                    elif messageType == 0x0c:
+                        # you were added message
+                        log.msg("received you were added message")
+                        pass
+                    elif messageType == 0x0d:
+                        # web pager message
+                        log.msg("received web pager message")
+                        flags = []
+                        multiparts = []
+                        msg = "ICQ page from %s [%s]\n%s" % (messageParts[0], messageParts[3], messageParts[5])
+                        if messageStringLength > 0: multiparts.append(tuple([msg]))
+                        self.receiveMessage(user, multiparts, flags)
+                    elif messageType == 0x0e:
+                        # email express message
+                        log.msg("received email express message")
+                        flags = []
+                        multiparts = []
+                        msg = "ICQ e-mail from %s [%s]\n%s" % (messageParts[0], messageParts[3], messageParts[5])
+                        if messageStringLength > 0: multiparts.append(tuple([msg]))
+                        self.receiveMessage(user, multiparts, flags)
+                    elif messageType == 0x13:
+                        # contact list message (send contacts for buddy list)
+                        log.msg("received contact list message")
+                        pass
+                    elif messageType == 0x1a:
+                        # plugin message
+                        log.msg("received plugin message")
+                        pass
+                    elif messageType == 0xe8:
+                        # automatic away message
+                        log.msg("received autoaway message")
+                        pass
+                    elif messageType == 0xe9:
+                        # automatic busy message
+                        log.msg("received autobusy message")
+                        pass
+                    elif messageType == 0xea:
+                        # automatic not available message
+                        log.msg("received auton/a message")
+                        pass
+                    elif messageType == 0xeb:
+                        # automatic do not disturb message
+                        log.msg("received autodnd message")
+                        pass
+                    elif messageType == 0xec:
+                        # automatic free for chat message
+                        log.msg("received autoffc message")
+                        pass
         else:
             log.msg('unknown channel %02x' % channel)
             log.msg(tlvs)
@@ -2965,6 +3036,25 @@ CAPS = dict( [
 
     ('\xf2\xe7\xc7\xf4\xfe\xad\x4d\xfb\xb2\x35\x36\x79\x8b\xdf\x00\x00',
      'trilliancrypt'),
+
+    # All of these appear with ICQ5... one of them must mean Xtras
+    ('\x09\x46\x13\x4c\x4c\x7f\x11\xd1\x82\x22\x44\x45\x53\x54\x00\x00',
+     'icq5unknown1'),
+
+    ('\x17\x8c\x2d\x9b\xda\xa5\x45\xbb\x8d\xdb\xf3\xbd\xbd\x53\xa1\x0a',
+     'icq5unknown2'),
+
+    ('\x1a\x09\x3c\x6c\xd7\xfd\x4e\xc5\x9d\x51\xa6\x47\x4e\x34\xf5\xa0',
+     'icq5unknown3'),
+
+    ('\x67\x36\x15\x15\x61\x2d\x4c\x07\x8f\x3d\xbd\xe6\x40\x8e\xa0\x41',
+     'icq5unknown4'),
+
+    ('\xb9\x97\x08\xb5\x3a\x92\x42\x02\xb0\x69\xf1\xe7\x57\xbb\x2e\x17',
+     'icq5unknown5'),
+
+    ("\xe3\x62\xc1\xe9\x12\x1a\x4b\x94\xa6\x26\x7a\x74\xde\x24\x27\x0d",
+     'icq5unknown6'),
 
     ('\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
      'empty')
