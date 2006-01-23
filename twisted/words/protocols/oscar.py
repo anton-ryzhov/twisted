@@ -327,11 +327,14 @@ class SSIBuddy:
         self.tlvs = tlvs
         self.authorizationRequestSent = False
         self.authorized = True
+        self.sms = None
         for k,v in tlvs.items():
             if k == 0x0066: # awaiting authorization
                 self.authorized = False
             elif k == 0x0131: # buddy nick
                 self.nick = v
+            elif k == 0x013a: # sms number
+                self.sms = v
             elif k == 0x013c: # buddy comment
                 self.buddyComment = v
             elif k == 0x013d: # buddy alerts
@@ -1084,6 +1087,7 @@ class BOSConnection(SNACBased):
             self.receiveMessage(user, multiparts, flags)
         elif channel == 2: # rendezvous
             status = struct.unpack('!H',tlvs[5][:2])[0]
+            cookie2 = tlvs[5][2:10]
             requestClass = tlvs[5][10:26]
             moreTLVs = readTLVs(tlvs[5][26:])
             if requestClass == CAP_CHAT: # a chat request
@@ -1113,6 +1117,21 @@ class BOSConnection(SNACBased):
                     desc = moreTLVs[12]
                     log.msg('file request from %s, %s, %s' % (user, name, desc))
                     self.receiveSendFileRequest(user, name, desc, cookie)
+            elif requestClass == CAP_ICON:
+                if moreTLVs.has_key(10001):
+                    checksum,length,timestamp = struct.unpack('!III',moreTLVs[10001][:12])
+                    icon = moreTLVs[10001][12:12+length+1]
+                    iconinfo[0] = user.name
+                    iconinfo[1] = timestamp
+                    iconinfo[2] = checksum
+                    iconinfo[3] = int(length)
+                    iconinfo[4] = icon
+                    log.msg('received icbm icon %s, length %d' % (binascii.hexlify(checksum), length))
+                    self.gotBuddyIcon(iconinfo)
+            elif requestClass == CAP_SEND_LIST:
+                pass
+            elif requestClass == CAP_SERV_REL:
+                pass
             else:
                 log.msg('unsupported rendezvous: %s' % requestClass)
                 log.msg(repr(moreTLVs))
@@ -1675,14 +1694,15 @@ class BOSConnection(SNACBased):
         """
         self.sendSNACnr(0x01, 0x11, struct.pack('!L',idleTime))
 
-    def sendMessage(self, user, message, wantAck = 0, autoResponse = 0, offline = 0 ):  \
-                    #haveIcon = 0, ):
+    def sendMessage(self, user, message, wantAck = 0, autoResponse = 0, offline = 0, haveIcon = 0, wantIcon = 0 ):
         """
         send a message to user (not an OSCARUseR).
         message can be a string, or a multipart tuple.
         if wantAck, we return a Deferred that gets a callback when the message is sent.
         if autoResponse, this message is an autoResponse, as if from an away message.
         if offline, this is an offline message (ICQ only, I think)
+        if haveIcon, we have a buddy icon and want user to know
+        if wantIcon, we want their buddy icon, tell us if you have it
         """
         data = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
         data = data + '\x00\x01' + chr(len(user)) + user
@@ -1716,6 +1736,10 @@ class BOSConnection(SNACBased):
             data = data + TLV(4,'')
         if offline:
             data = data + TLV(6,'')
+        if haveIcon:
+            data = data + TLV(8,'')
+        if wantIcon:
+            data = data + TLV(9,'')
         if wantAck:
             return self.sendSNAC(0x04, 0x06, data).addCallback(self._cbSendMessageAck, user, message)
         self.sendSNACnr(0x04, 0x06, data)
@@ -1739,6 +1763,38 @@ class BOSConnection(SNACBased):
         if wantAck:
             data = data + TLV(3,'')
             return self.sendSNAC(0x04, 0x06, data).addCallback(self._cbSendInviteAck, user, chatroom)
+        self.sendSNACnr(0x04, 0x06, data)
+
+    def _cbSendInviteAck(self, snac, user, chatroom):
+        return user, chatroom
+
+    def sendBuddyIcon(self, user, iconsum, iconlen, iconstamp, icon, wantAck = 0):
+        """
+        send a buddy icon directly to a user (not an OSCARUser).
+        iconsum should be a SSIIconSum.
+        if wantAck, we return a Deferred that gets a callback when the message is sent.
+        """
+        cookie = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
+        intdata = '\x00\x00'+cookie+CAP_ICON
+        intdata = intdata + TLV(0x0a,'\x00\x01')
+        intdata = intdata + TLV(0x0f,'')
+
+        ICONIDENT = 'AVT1picture.id' # Do we need to come up with our own?
+        intdata = intdata + TLV(0x2711,'\x00\x00'+struct.pack('!HII',iconsum,iconlen,iconstamp)+icon+ICONIDENT)
+        #/* TLV t(2711) */
+        #aimbs_put16(&fr->data, 0x2711);
+        #aimbs_put16(&fr->data, 4+4+4+iconlen+strlen(AIM_ICONIDENT));
+        #aimbs_put16(&fr->data, 0x0000);
+        #aimbs_put16(&fr->data, iconsum);
+        #aimbs_put32(&fr->data, iconlen);
+        #aimbs_put32(&fr->data, iconstamp);
+        #aimbs_putraw(&fr->data, icon, iconlen);
+        #aimbs_putstr(&fr->data, AIM_ICONIDENT);
+
+        data = cookie+'\x00\x02'+chr(len(user))+user+TLV(5,intdata)
+        if wantAck:
+            data = data + TLV(3,'')
+            return self.sendSNAC(0x04, 0x06, data).addCallback(self._cbSendIconNotify, user, icon)
         self.sendSNACnr(0x04, 0x06, data)
 
     def _cbSendInviteAck(self, snac, user, chatroom):
@@ -1985,7 +2041,7 @@ class BOSConnection(SNACBased):
     def _ebDeferredConfirmAccountError(self, error):
         log.msg('ERROR IN ACCOUNT CONFIRMATION RETRIEVAL %s' % error)
 
-    def sendBuddyIcon(self, iconData, iconLen):
+    def uploadBuddyIcon(self, iconData, iconLen):
         """
         uploads a buddy icon
         """
