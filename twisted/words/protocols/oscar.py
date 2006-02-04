@@ -1189,11 +1189,11 @@ class BOSConnection(SNACBased):
                     length = int(length)
                     icon = moreTLVs[10001][12:12+length+1]
                     iconinfo = []
-                    iconinfo[0] = user.name
-                    iconinfo[1] = timestamp
-                    iconinfo[2] = checksum
-                    iconinfo[3] = length
-                    iconinfo[4] = icon
+                    iconinfo.append(user.name)
+                    iconinfo.append(timestamp)
+                    iconinfo.append(checksum)
+                    iconinfo.append(length)
+                    iconinfo.append(icon)
                     log.msg('received icbm icon %s, length %d' % (binascii.hexlify(checksum), length))
                     self.gotBuddyIcon(iconinfo)
             elif requestClass == CAP_SEND_LIST:
