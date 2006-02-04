@@ -103,8 +103,45 @@ def encryptPasswordICQ(password):
 def dehtml(text):
     if (not text):
         text = ""
-    text=re.sub('<[Bb][Rr]>',"\n",text)
+
+    # In HTML, line breaks are just whitespace. 
+    text=re.sub("\n"," ",text)
+
+    # Convert all of the block-level elements into linebreaks
+    text=re.sub('</?[Bb][Rr][^>]*>',"\n",text)
+    text=re.sub('</?[Pp][^>]*>',"\n",text)
+    text=re.sub('</?[Dd][Ii][Vv][^>]*>',"\n",text)
+
+    # Convert inline images to their alt-tags
+    text=re.sub('<[Ii][Mm][Gg] +[^>]*alt=["\']([^"\']*)["\'][^>]*>',r"\1",text)
+    
+    # Turn bold into stars
+    text=re.sub('<[Bb]>(.*?)</[Bb]>',r"*\1*",text)
+    text=re.sub('<strong>(.*?)</strong>',r"*\1*",text)
+    
+    # Turn italics into underscores
+    text=re.sub('<[Ii]>(.*?)</[Ii]>',r"_\1_",text)
+    
+    # Turn quotes into, um quotes.
+    text=re.sub('<quote[^>]*>(.*?)</quote>',r'"\1"',text)
+    
+    # Extract links
+    text=re.sub('<[Aa] +[^>]*href=["\']([^"\']*)["\'][^>]*>(.*?)</[Aa]>',r"\2 &lt;\1&gt; ",text)
+    
+    # Convert more than two linebreaks into just two
+    text=re.sub("\n\n+","\n\n",text)
+    
+    # Get rid of any leading or trailing whitespace
+    text=re.sub("^[ \n]+","",text)
+    text=re.sub("[ \n]+$","",text)
+
+    # Convert clumps of whitespace into just one space
+    text=re.sub(" +"," ",text)
+
+    # Remove any remaining HTML elements.
     text=re.sub('<[^>]*>','',text)
+
+    # Convert the entities
     text=string.replace(text,'&gt;','>')
     text=string.replace(text,'&lt;','<')
     text=string.replace(text,'&nbsp;',' ')
@@ -133,6 +170,7 @@ class OSCARUser:
         self.icqLANIPport = None
         self.icqProtocolVersion = None
         self.status = ""
+        self.url = ""
         self.statusencoding = None
         self.idleTime = 0
         self.iconhash = None
@@ -242,6 +280,14 @@ class OSCARUser:
                             log.msg("   extracted status message: %s"%(self.status))
                             if self.statusencoding:
                                 log.msg("   status message encoding: %s"%(str(self.statusencoding)))
+                    elif exttype == 0x09: # iTunes URL
+                        statlen = (struct.unpack('!H', v[4:6]))[0]
+                        #statlen=int((struct.unpack('!H', v[2:4]))[0])-4
+                        if statlen>2 and v[6+statlen-1:6+statlen] != "\x00":
+                            self.url=v[6:6+statlen]
+                        else:
+                            self.url=None
+                        log.msg("   extracted itunes URL: %s"%(repr(self.url)))
                     else:
                         log.msg("   unknown extended status type: %d\ndata: %s"%(ord(v[1]), repr(v[:ord(v[3])+4])))
                     #v=v[ord(v[3])+4:]
@@ -992,7 +1038,27 @@ class BOSConnection(SNACBased):
         """
         self.offlineBuddy(self.parseUser(snac[3]))
 
-#    def oscar_04_03(self, snac):
+    def oscar_04_01(self, snac):
+        """
+        ICBM Error
+        """
+        data = snac[3]
+        errorcode = struct.unpack('!H',data[:2])[0]
+        data = data[2:]
+        if errorcode==0x04:
+            errortxt="client is offline"
+        elif errorcode==0x09:
+            errortxt="this message not supported by client"
+        elif errorcode==0x0e:
+            errortxt="invalid (incorrectly formatted) message"
+        elif errorcode==0x10:
+            errortxt="the receiver or sender is blocked"
+        else:
+            errortxt="an unknown error has occured. (0x%02x)"%(errorcode)
+        
+        log.msg('ICBM Error: %s' % (errortxt))
+        self.errorMessage('Unable to deliver message because %s' % (errortxt))
+        log.msg(snac)
 
     def oscar_04_05(self, snac):
         """
@@ -1289,6 +1355,13 @@ class BOSConnection(SNACBased):
         """
         #tlvs = readTLVs(snac[3])
         pass # we don't know how to parse this
+
+    def oscar_13_08(self, snac):
+        # SSI Edit: add items
+        # Why does this come to the client?
+        pass
+        #uinLen = ord(snac[3][pos])
+        #uin = snac[3][pos+1:pos+1+uinLen]
 
     def oscar_13_0E(self, snac):
         """
@@ -1650,6 +1723,29 @@ class BOSConnection(SNACBased):
         
         self.sendSNACnr(0x01, 0x1e, packet)
 
+    def setURL(self, status=None):
+        """
+        set the extended status URL
+        """
+               
+        if not status:
+            status = ""
+        else:
+            status = status[:220]
+        log.msg("Setting extended status URL to \"%s\""%status)
+        self.backMessage = status
+        packet = struct.pack(
+               "!HHHbbH",
+               0x001d,         # H
+               len(status)+8,  # H
+               0x0006,         # H
+               0x04,           # b
+               len(status)+4,  # b
+               len(status)     # H
+        ) + str(status) + struct.pack("H",0x0000)
+        
+        self.sendSNACnr(0x01, 0x1e, packet)
+
     def sendAuthorizationRequest(self, uin, authString):
         """
         send an authorization request
@@ -1715,15 +1811,27 @@ class BOSConnection(SNACBased):
         messageData = ''
         for part in message:
             charSet = 0
-            if 'unicode' in part[1:]:
-                charSet = 2
-                #part[0] = part[0].encode('utf-8')
-                part[0] = part[0].encode('utf-16be', 'replace')
-            elif 'iso-8859-1' in part[1:]:
-                charSet = 3
-                part[0] = part[0].encode('iso-8859-1', 'replace')
-            elif 'none' in part[1:]:
+            if 'none' in part[1:]:
                 charSet = 0xffff
+            else:
+                try:
+                    part[0] = part[0].encode('iso-8859-1')
+                    charSet = 3
+                except:
+                    try:
+                        part[0] = part[0].encode('utf-16be', 'replace')
+                        charSet = 2
+                    except:
+                        part[0] = repl(part[0]).encode('i18-8859-1', 'replace')
+                        charSet = 3
+            #if 'unicode' in part[1:]:
+            #    charSet = 2
+            #    part[0] = part[0].encode('utf-16be', 'replace')
+            #elif 'iso-8859-1' in part[1:]:
+            #    charSet = 3
+            #    part[0] = part[0].encode('iso-8859-1', 'replace')
+            #elif 'none' in part[1:]:
+            #    charSet = 0xffff
             if 'macintosh' in part[1:]:
                 charSubSet = 0xb
             else:
@@ -1733,10 +1841,13 @@ class BOSConnection(SNACBased):
             messageData = messageData + part[0]
         data = data.encode('iso-8859-1', 'replace') + TLV(2, '\x05\x01\x00\x03\x01\x01\x02'+messageData)
         if wantAck:
+            log.msg("sendMessage: Sending wanting ACK")
             data = data + TLV(3,'')
         if autoResponse:
+            log.msg("sendMessage: Sending as an auto-response")
             data = data + TLV(4,'')
         if offline:
+            log.msg("sendMessage: Sending offline")
             data = data + TLV(6,'')
         if haveIcon:
             data = data + TLV(8,'')
