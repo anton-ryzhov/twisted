@@ -158,6 +158,22 @@ def html(text):
     text=string.replace(text,"\n","<br>")
     return '<html><body bgcolor="white"><font color="black">%s</font></body></html>'%text
 
+def getIconSum(buf):
+    sum = 0L
+    i = 0
+    buflen = len(buf)
+    while i+1 < buflen:
+        sum += (ord(buf[i+1]) << 8) + ord(buf[i])
+        i += 2
+
+    if i < buflen:
+        sum += ord(buf[i])
+
+    sum = ((sum & 0xffff0000) >> 16) + (sum & 0x0000ffff)
+
+    return sum
+
+
 
 class OSCARUser:
     def __init__(self, name, warn, tlvs):
@@ -173,8 +189,11 @@ class OSCARUser:
         self.url = ""
         self.statusencoding = None
         self.idleTime = 0
-        self.iconhash = None
-        self.iconflags = None
+        self.iconmd5sum = None
+        self.icontype = None
+        self.iconcksum = None
+        self.iconlen = None
+        self.iconstamp = None
         for k,v in tlvs.items():
             if k == 0x0001: # user flags
                 v=struct.unpack('!H',v)[0]
@@ -263,9 +282,9 @@ class OSCARUser:
                         pass
                     elif exttype == 0x01: # Actual interesting buddy icon
                         if extlen > 0 and (extflags == 0x00 or extflags == 0x01):
-                            self.iconhash = v[4:4+extlen]
+                            self.iconmd5sum = v[4:4+extlen]
                             self.icontype = extflags
-                            log.msg("   extracted icon hash: extflags = %s, iconhash = %s" % (str(hex(extflags)), binascii.hexlify(self.iconhash)))
+                            log.msg("   extracted icon hash: extflags = %s, iconhash = %s" % (str(hex(extflags)), binascii.hexlify(self.iconmd5sum)))
                     elif exttype == 0x02: # Extended Status Message
                         if extlen >= 4: # Why?  Gaim does this
                             availlen = (struct.unpack('!H', v[4:6]))[0]
@@ -1001,7 +1020,7 @@ class BOSConnection(SNACBased):
                 iconhash = v[4:4+iconhashlen]
                 log.msg("   extracted icon hash: flags = %s, flags-as-hex = %s, iconhash = %s" % (bitstostr(iconflags, 8), str(hex(iconflags)), binascii.hexlify(iconhash)))
                 if iconflags == 0x41:
-                    self.requestBuddyIcon(iconhash)
+                    self.receivedIconUploadRequest(iconhash)
             elif exttype == 0x02: # Extended Status Message
                 # I'm not sure if we should do something about this here?
                 statlen=int((struct.unpack('!H', v[2:4]))[0])
@@ -1137,7 +1156,7 @@ class BOSConnection(SNACBased):
                         flags.append('icon')
                         flags.append((iconLength, iconSum, iconStamp))
                 elif k == 0x09: # request for buddy icon
-                    flags.append('buddyrequest')
+                    flags.append('iconrequest')
                 elif k == 0x0b: # non-direct connect typing notification
                     flags.append('typingnot')
                 elif k == 0x17: # extra data.. wonder what this is?
@@ -1187,15 +1206,12 @@ class BOSConnection(SNACBased):
                 if moreTLVs.has_key(10001):
                     checksum,length,timestamp = struct.unpack('!III',moreTLVs[10001][:12])
                     length = int(length)
-                    icon = moreTLVs[10001][12:12+length+1]
-                    iconinfo = []
-                    iconinfo.append(user.name)
-                    iconinfo.append(timestamp)
-                    iconinfo.append(checksum)
-                    iconinfo.append(length)
-                    iconinfo.append(icon)
-                    log.msg('received icbm icon %s, length %d' % (binascii.hexlify(checksum), length))
-                    self.gotBuddyIcon(iconinfo)
+                    icondata = moreTLVs[10001][12:12+length+1]
+                    user.iconcksum = checksum
+                    user.iconlen = length
+                    user.iconstamp = timestamp
+                    log.msg('received icbm icon, length %d' % (length))
+                    self.receivedIconDirect(user, icondata)
             elif requestClass == CAP_SEND_LIST:
                 pass
             elif requestClass == CAP_SERV_REL:
@@ -1792,14 +1808,14 @@ class BOSConnection(SNACBased):
         """
         self.sendSNACnr(0x01, 0x11, struct.pack('!L',idleTime))
 
-    def sendMessage(self, user, message, wantAck = 0, autoResponse = 0, offline = 0, haveIcon = 0, wantIcon = 0 ):
+    def sendMessage(self, user, message, wantAck = 0, autoResponse = 0, offline = 0, wantIcon = 0, iconSum = None, iconLen = None, iconStamp = None ):
         """
         send a message to user (not an OSCARUseR).
         message can be a string, or a multipart tuple.
         if wantAck, we return a Deferred that gets a callback when the message is sent.
         if autoResponse, this message is an autoResponse, as if from an away message.
         if offline, this is an offline message (ICQ only, I think)
-        if haveIcon, we have a buddy icon and want user to know
+        if iconLen, iconSum, and iconStamp, we have a buddy icon and want user to know
         if wantIcon, we want their buddy icon, tell us if you have it
         """
         data = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
@@ -1849,8 +1865,8 @@ class BOSConnection(SNACBased):
         if offline:
             log.msg("sendMessage: Sending offline")
             data = data + TLV(6,'')
-        if haveIcon:
-            data = data + TLV(8,'')
+        if iconSum and iconLen and iconStamp:
+            data = data + TLV(8,struct.pack('!IHHI', iconLen, 0x0001, iconSum, iconStamp))
         if wantIcon:
             data = data + TLV(9,'')
         if wantAck:
@@ -1881,10 +1897,10 @@ class BOSConnection(SNACBased):
     def _cbSendInviteAck(self, snac, user, chatroom):
         return user, chatroom
 
-    def sendBuddyIcon(self, user, iconsum, iconlen, iconstamp, icon, wantAck = 0):
+    def sendIconDirect(self, user, icon, timestamp = time.time(), wantAck = 0):
         """
         send a buddy icon directly to a user (not an OSCARUser).
-        iconsum should be a SSIIconSum.
+        timestamp should be the timestamp on the icon, or will be "now"
         if wantAck, we return a Deferred that gets a callback when the message is sent.
         """
         cookie = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
@@ -1892,17 +1908,11 @@ class BOSConnection(SNACBased):
         intdata = intdata + TLV(0x0a,'\x00\x01')
         intdata = intdata + TLV(0x0f,'')
 
+        iconlen = len(icon)
+        iconsum = getIconSum(icon)
+
         ICONIDENT = 'AVT1picture.id' # Do we need to come up with our own?
-        intdata = intdata + TLV(0x2711,'\x00\x00'+struct.pack('!HII',iconsum,iconlen,iconstamp)+icon+ICONIDENT)
-        #/* TLV t(2711) */
-        #aimbs_put16(&fr->data, 0x2711);
-        #aimbs_put16(&fr->data, 4+4+4+iconlen+strlen(AIM_ICONIDENT));
-        #aimbs_put16(&fr->data, 0x0000);
-        #aimbs_put16(&fr->data, iconsum);
-        #aimbs_put32(&fr->data, iconlen);
-        #aimbs_put32(&fr->data, iconstamp);
-        #aimbs_putraw(&fr->data, icon, iconlen);
-        #aimbs_putstr(&fr->data, AIM_ICONIDENT);
+        intdata = intdata + TLV(0x2711,'\x00\x00'+struct.pack('!HII',iconsum,iconlen,timestamp)+icon+ICONIDENT)
 
         data = cookie+'\x00\x02'+chr(len(user))+user+TLV(5,intdata)
         if wantAck:
@@ -1910,8 +1920,9 @@ class BOSConnection(SNACBased):
             return self.sendSNAC(0x04, 0x06, data).addCallback(self._cbSendIconNotify, user, icon)
         self.sendSNACnr(0x04, 0x06, data)
 
-    def _cbSendInviteAck(self, snac, user, chatroom):
-        return user, chatroom
+    def _cbSendIconNotify(self, snac, user, icon):
+        log.msg("Received icon notification from %s" % (user))
+        return user, icon
 
     def connectService(self, service, wantCallback = 0, extraData = ''):
         """
@@ -2154,9 +2165,9 @@ class BOSConnection(SNACBased):
     def _ebDeferredConfirmAccountError(self, error):
         log.msg('ERROR IN ACCOUNT CONFIRMATION RETRIEVAL %s' % error)
 
-    def uploadBuddyIcon(self, iconData, iconLen):
+    def uploadBuddyIconToServer(self, iconData, iconLen):
         """
-        uploads a buddy icon
+        uploads a buddy icon to the buddy icon server
         """
         d = defer.Deferred()
         d.addErrback(self._ebDeferredSendBuddyIconError)
@@ -2166,9 +2177,9 @@ class BOSConnection(SNACBased):
     def _ebDeferredSendBuddyIconError(self, error):
         log.msg('ERROR IN SEND BUDDY ICON %s' % error)
 
-    def retrieveBuddyIcon(self, contact, hash, flags):
+    def retrieveBuddyIconFromServer(self, contact, hash, flags):
         """
-        retrieves a buddy icon
+        retrieves a buddy icon from the icon server
         """
         d = defer.Deferred()
         d.addErrback(self._ebDeferredRetrieveBuddyIconError)
@@ -2343,9 +2354,15 @@ class BOSConnection(SNACBased):
         """
         pass
 
-    def requestBuddyIcon(self, iconhash):
+    def receivedIconUploadRequest(self, iconhash):
         """
         called when the server wants our buddy icon
+        """
+        pass
+
+    def receivedIconDirect(self, user, icondata):
+        """
+        called when a user sends their buddy icon
         """
         pass
 
