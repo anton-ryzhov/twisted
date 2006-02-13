@@ -1839,7 +1839,7 @@ class BOSConnection(SNACBased):
                         charSet = 2
                     except:
                         #part[0] = repl(part[0]).encode('i18-8859-1', 'replace')
-                        part[0] = repr(part[0]).encode('i18-8859-1', 'replace')
+                        part[0] = part[0].encode('iso-8859-1', 'replace')
                         charSet = 3
             #if 'unicode' in part[1:]:
             #    charSet = 2
