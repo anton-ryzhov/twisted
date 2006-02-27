@@ -393,11 +393,17 @@ class SSIBuddy:
         self.authorizationRequestSent = False
         self.authorized = True
         self.sms = None
+        self.email = None
+        self.buddyComment = none
+        self.alertSound = None
+        self.firstMessage = None
         for k,v in tlvs.items():
             if k == 0x0066: # awaiting authorization
                 self.authorized = False
             elif k == 0x0131: # buddy nick
                 self.nick = v
+            elif k == 0x0137: # buddy email
+                self.email = v
             elif k == 0x013a: # sms number
                 self.sms = v
             elif k == 0x013c: # buddy comment
@@ -419,6 +425,8 @@ class SSIBuddy:
                     self.alertWhen.append('unaway')
             elif k == 0x013e:
                 self.alertSound = v
+            elif k == 0x0145: # first time we sent a message to this person
+                self.firstMessage = v # unix timestamp
  
     def oscarRep(self):
         data = struct.pack(">H", len(self.name)) + self.name
@@ -1594,6 +1602,8 @@ class BOSConnection(SNACBased):
                 # I'm not sure why there are multiple of these sometimes
                 # We're going to return all of them though...
                 iconcksum.append(SSIIconSum(name, groupID, buddyID, tlvs))
+            elif itemType == AIM_SSI_TYPE_LOCALBUDDYNAME: # locally stored buddy name
+                pass
             else:
                 log.msg('unknown SSI entry: %s %s %s %s %s' % (name, groupID, buddyID, itemType, tlvs))
         timestamp = struct.unpack('!L',itemdata)[0]
@@ -3279,3 +3289,4 @@ AIM_SSI_TYPE_LASTUPDATE = 0x000f
 AIM_SSI_TYPE_SMS = 0x0010
 AIM_SSI_TYPE_IMPORTTIME = 0x0013
 AIM_SSI_TYPE_ICONINFO = 0x0014
+AIM_SSI_TYPE_LOCALBUDDYNAME = 0x0131
