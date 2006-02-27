@@ -394,7 +394,7 @@ class SSIBuddy:
         self.authorized = True
         self.sms = None
         self.email = None
-        self.buddyComment = none
+        self.buddyComment = None
         self.alertSound = None
         self.firstMessage = None
         for k,v in tlvs.items():
