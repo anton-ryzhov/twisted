@@ -169,7 +169,7 @@ def getIconSum(buf):
     if i < buflen:
         sum += ord(buf[i])
 
-    sum = ((sum & L0xffff0000) >> 16) + (sum & L0x0000ffff)
+    sum = ((sum & 0xffff0000L) >> 16) + (sum & 0x0000ffffL)
 
     return sum
 
