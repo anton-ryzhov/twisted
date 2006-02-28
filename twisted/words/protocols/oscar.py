@@ -169,7 +169,7 @@ def getIconSum(buf):
     if i < buflen:
         sum += ord(buf[i])
 
-    sum = ((sum & 0xffff0000) >> 16) + (sum & 0x0000ffff)
+    sum = ((sum & L0xffff0000) >> 16) + (sum & L0x0000ffff)
 
     return sum
 
@@ -1162,7 +1162,11 @@ class BOSConnection(SNACBased):
                     iconLength, foo, iconSum, iconStamp = struct.unpack('!LHHL',v)
                     if iconLength:
                         flags.append('icon')
-                        flags.append((iconLength, iconSum, iconStamp))
+                        # why exactly was I doing it like this?
+                        #flags.append((iconLength, iconSum, iconStamp))
+                        user.iconcksum = iconSum
+                        user.iconlen = iconLength
+                        user.iconstamp = iconStamp
                 elif k == 0x09: # request for buddy icon
                     flags.append('iconrequest')
                 elif k == 0x0b: # non-direct connect typing notification
