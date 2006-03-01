@@ -1483,6 +1483,7 @@ class BOSConnection(SNACBased):
                     messagetype, messageflags,messagelen = struct.unpack('<BBH',v[20:24])
                     message = [ str( v[24:24+messagelen-1] )
                                 + "\n\n/sent " + msg_date ]
+                    log.msg("What the fuck?  %r - %r - %r - %r - %r - %r" % (senderuin, messagetype, messageflags, messagelen, msg_date, message))
 
                     if (messagelen > 0):
                         flags = []
@@ -3064,7 +3065,9 @@ class OscarAuthenticator(OscarConnection):
         elif tlvs.has_key(8):
             errorcode=tlvs[8]
             errorurl=tlvs[4]
-            if errorcode=='\x00\x05':
+            if errorcode=='\x00\x02':
+                error="The instant messenger server is temporarily unavailable"
+            elif errorcode=='\x00\x05':
                 error="Incorrect username or password."
             elif errorcode=='\x00\x11':
                 error="Your account is currently suspended."
