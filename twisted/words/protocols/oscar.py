@@ -902,9 +902,11 @@ class BOSConnection(SNACBased):
         return nick,first,last,email,homeCity,homeState,homePhone,homeFax,homeAddress,cellPhone,homeZip,homeCountry
 
     def parseBasicInfo(self,data):
-        #result = ord(data[0])
-
         pos = 0
+        result = ord(data[pos])
+        if result != 0x0a:
+            return None,None,None,None
+        pos += 1
         nicklen = struct.unpack('<H', data[pos:pos+2])[0]
         pos += 2
         nick = data[pos:pos + nicklen - 1]
@@ -2206,17 +2208,21 @@ class BOSConnection(SNACBased):
         log.msg('ERROR IN RETRIEVE BUDDY ICON %s' % error)
 
     def getMetaInfo(self, user, id):
-        #if user.
-        #reqdata = struct.pack("I",int(self.username))+'\xd0\x07\x08\x00\xba\x04'+struct.pack("I",int(user))
         reqdata = struct.pack("<I",int(self.username))+'\xd0\x07'+ struct.pack("<H",id) +'\xb2\x04'+struct.pack("<I",int(user))
         data = struct.pack("<H",14)+reqdata
         tlvs = TLV(0x01, data)
-        #return self.sendSNAC(0x15, 0x02, tlvs).addCallback(self._cbGetMetaInfo)
         return self.sendSNACnr(0x15, 0x02, tlvs)
 
-    #def _cbGetMetaInfo(self, snac):
-    #    nick,first,last,email = self.parseBasicInfo(snac[5][16:])
-#     return [nick,first,last,email]
+    def getShortInfo(self, user):
+        #if user.
+        reqdata = struct.pack("<I",int(self.username))+'\xd0\x07\x08\x00\xba\x04'+struct.pack("<I",int(user))
+        data = struct.pack("<H",14)+reqdata
+        tlvs = TLV(0x01, data)
+        return self.sendSNAC(0x15, 0x02, tlvs).addCallback(self._cbGetShortInfo)
+
+    def _cbGetShortInfo(self, snac):
+        nick,first,last,email = self.parseBasicInfo(snac[5][16:])
+        return [nick,first,last,email]
 
     def requestOffline(self):
         """
@@ -3064,7 +3070,10 @@ class OscarAuthenticator(OscarConnection):
             self.disconnect()
         elif tlvs.has_key(8):
             errorcode=tlvs[8]
-            errorurl=tlvs[4]
+            if tlvs.has_key(4):
+                errorurl=tlvs[4]
+            else:
+                errorurl=None
             if errorcode=='\x00\x02':
                 error="The instant messenger server is temporarily unavailable"
             elif errorcode=='\x00\x05':
