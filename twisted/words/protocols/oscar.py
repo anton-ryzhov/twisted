@@ -386,7 +386,7 @@ class SSIGroup:
 class SSIBuddy:
     def __init__(self, name, groupID, buddyID, tlvs = {}):
         self.name = name
-        self.nick = name
+        self.nick = None
         self.groupID = groupID
         self.buddyID = buddyID
         self.tlvs = tlvs
@@ -433,6 +433,19 @@ class SSIBuddy:
         tlvs = ""
         if not self.authorized:
             tlvs += TLV(0x0066, "") # awaiting authorization
+        if self.nick:
+            tlvs += TLV(0x0131, self.nick)
+        if self.email:
+            tlvs += TLV(0x0137, self.email)
+        if self.sms:
+            tlvs += TLV(0x013a, self.sms)
+        if self.buddyComment:
+            tlvs += TLV(0x013c, self.buddyComment)
+        # Should do buddy alerts here too
+        if self.alertSound:
+            tlvs += TLV(0x013e, self.alertSound)
+        if self.firstMessage:
+            tlvs += TLV(0x0145, self.firstMessage)
         data += struct.pack(">4H", self.groupID, self.buddyID, 0, len(tlvs))
         return data+tlvs
 #        tlvData = reduce(lambda x,y: x+y, map(lambda (k,v):TLV(k,v), self.tlvs.items()), '\000\000')
