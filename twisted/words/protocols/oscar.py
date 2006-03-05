@@ -2916,12 +2916,20 @@ class SSBIService(OSCARService):
         #\x05\x00\x00\x00\x00 - bad format?
         #\x04\x00\x00\x00\x00 - too large?
         #\x00\x00\x01\x01\x10 - ok, this is a hash, last one is length
-
-        #checksumlen = (struct.unpack('!B', snac[4]))[0]
-        #checksum = snac[1:1+checksumlen]
         self.disconnect()
-        #return checksum
-        return "Yeah ok"
+
+        # FIXME, This needs to be done like... correctly.  =D
+        resultcode = snac[5][0]
+        if resultcode == 0x04:
+            return "Icon too large."
+        if resultcode == 0x05:
+            return "Icon not in accepted format."
+        if resultcode == 0x01:
+            # Success
+            checksumlen = struct.unpack('!B', snac[5][4])[0]
+            checksum = snac[5:5+checksumlen]
+            return checksum
+        return "Unknown result from buddy icon retrieval."
 
     def _cbIconResponseError(self, error):
         log.msg("GOT UPLOAD ICON ERROR %s" % error)
