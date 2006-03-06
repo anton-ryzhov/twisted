@@ -735,6 +735,7 @@ class BOSConnection(SNACBased):
         self.services = {}
         self.socksProxyServer = None
         self.socksProxyPort = None
+        self.connectPort = 5190
 
         if not self.capabilities:
             self.capabilities = [CAP_CHAT]
@@ -957,10 +958,10 @@ class BOSConnection(SNACBased):
         #c = serviceClasses[service](self, cookie, d)
         if self.socksProxyServer and self.socksProxyPort:
             c = protocol.ProxyClientCreator(reactor, serviceClasses[service], self, cookie, d)
-            c.connectSocks5Proxy(ip, 5190, self.socksProxyServer, int(self.socksProxyPort), "BOSCONN").addCallback(addService)
+            c.connectSocks5Proxy(ip, self.connectPort, self.socksProxyServer, int(self.socksProxyPort), "BOSCONN").addCallback(addService)
         else:
             c = protocol.ClientCreator(reactor, serviceClasses[service], self, cookie, d)
-            c.connectTCP(ip, 5190).addCallback(addService)
+            c.connectTCP(ip, self.connectPort).addCallback(addService)
         #self.services[service] = c
 
     def oscar_01_07(self,snac):
