@@ -331,6 +331,9 @@ class OSCARUser:
         s=s+'>'
         return s
 
+    def __repr__(self):
+        return self.__str__()
+
 
 class SSIGroup:
     def __init__(self, name, groupID, buddyID, tlvs = {}):
@@ -377,10 +380,13 @@ class SSIGroup:
 
     def __str__(self):
         s = '<SSIGroup %s (ID %d)' % (self.name, self.buddyID)
-        if len(self.users) > 0:
-            s=s+' (Members:'+', '.join(self.users)+')'
+        #if len(self.users) > 0:
+        #    s=s+' (Members:'+', '.join(self.users)+')'
         s=s+'>'
         return s
+
+    def __repr__(self):
+        return self.__str__()
 
 
 class SSIBuddy:
@@ -457,6 +463,9 @@ class SSIBuddy:
         s=s+'>'
         return s
 
+    def __repr__(self):
+        return self.__str__()
+
 
 class SSIIconSum:
     def __init__(self, name="1", groupID=0x0000, buddyID=0x51f4, tlvs = {}):
@@ -481,6 +490,9 @@ class SSIIconSum:
         s = '<SSIIconSum %s:%s (ID %d)' % (self.name, binascii.hexlify(self.iconSum), self.buddyID)
         s=s+'>'
         return s
+
+    def __repr__(self):
+        return self.__str__()
 
 
 class OscarConnection(protocol.Protocol):
@@ -632,7 +644,7 @@ class SNACBased(OscarConnection):
         if not func:
             self.oscar_unknown(snac)
         else:
-            func(snac[2:])
+            func(snac)
         return "Data"
 
     def oscar_unknown(self,snac):
@@ -641,8 +653,8 @@ class SNACBased(OscarConnection):
 
 
     def oscar_01_03(self, snac):
-        numFamilies = len(snac[3])/2
-        serverFamilies = struct.unpack("!"+str(numFamilies)+'H', snac[3])
+        numFamilies = len(snac[5])/2
+        serverFamilies = struct.unpack("!"+str(numFamilies)+'H', snac[5])
         d = ''
         for fam in serverFamilies:
             log.msg("Server supports SNAC family %s" % (str(hex(fam))))
@@ -656,7 +668,7 @@ class SNACBased(OscarConnection):
         change of rate information.
         """
         # this can be parsed, maybe we can even work it in
-        info=struct.unpack('!HHLLLLLLL',snac[3][8:40])
+        info=struct.unpack('!HHLLLLLLL',snac[5][8:40])
         code=info[0]
         rateclass=info[1]
         window=info[2]
@@ -947,7 +959,7 @@ class BOSConnection(SNACBased):
         data for a new service connection
         d might be a deferred to be called back when the service is ready
         """
-        tlvs = readTLVs(snac[3][0:])
+        tlvs = readTLVs(snac[5][0:])
         service = struct.unpack('!H',tlvs[0x0d])[0]
         ip = tlvs[5]
         cookie = tlvs[6]
@@ -970,10 +982,10 @@ class BOSConnection(SNACBased):
         """
         self.outRateInfo={}
         self.outRateTable={}
-        count=struct.unpack('!H',snac[3][0:2])[0]
-        snac[3]=snac[3][2:]
+        count=struct.unpack('!H',snac[5][0:2])[0]
+        snac[5]=snac[5][2:]
         for i in range(count):
-            info=struct.unpack('!HLLLLLLL',snac[3][:30])
+            info=struct.unpack('!HLLLLLLL',snac[5][:30])
             classid=info[0]
             window=info[1]
             clear=info[2]
@@ -981,18 +993,18 @@ class BOSConnection(SNACBased):
             lasttime=time.time()
             maxrate=info[7]
             self.scheduler.setStat(classid,window=window,clear=clear,rate=currentrate,lasttime=lasttime,maxrate=maxrate)
-            snac[3]=snac[3][35:]
+            snac[5]=snac[5][35:]
 
-        while (len(snac[3]) > 0):
-            info=struct.unpack('!HH',snac[3][:4])
+        while (len(snac[5]) > 0):
+            info=struct.unpack('!HH',snac[5][:4])
             classid=info[0]
             count=info[1]
-            info=struct.unpack('!'+str(2*count)+'H',snac[3][4:4+count*4])
+            info=struct.unpack('!'+str(2*count)+'H',snac[5][4:4+count*4])
             while (len(info)>0):
                 fam,sub=str(info[0]),str(info[1])
                 self.scheduler.bindIntoClass(fam,sub,classid)
                 info=info[2:]
-            snac[3]=snac[3][4+count*4:]             
+            snac[5]=snac[5][4+count*4:]             
 
         self.sendSNACnr(0x01,0x08,"\x00\x01\x00\x02\x00\x03\x00\x04\x00\x05") # ack
         self.initDone()
@@ -1007,16 +1019,16 @@ class BOSConnection(SNACBased):
         Receive Self User Info
         """
         log.msg('Received Self User Info %s' % str(snac))
-        self.receivedSelfInfo(self.parseUser(snac[3]))
+        self.receivedSelfInfo(self.parseUser(snac[5]))
 
     def oscar_01_10(self,snac):
         """
         we've been warned
         """
-        skip = struct.unpack('!H',snac[3][:2])[0]
-        newLevel = struct.unpack('!H',snac[3][2+skip:4+skip])[0]/10
-        if len(snac[3])>4+skip:
-            by = self.parseUser(snac[3][4+skip:])
+        skip = struct.unpack('!H',snac[5][:2])[0]
+        newLevel = struct.unpack('!H',snac[5][2+skip:4+skip])[0]/10
+        if len(snac[5])>4+skip:
+            by = self.parseUser(snac[5][4+skip:])
         else:
             by = None
         self.receiveWarning(newLevel, by)
@@ -1025,16 +1037,16 @@ class BOSConnection(SNACBased):
         """
         MOTD
         """
-        motd_msg_type = struct.unpack('!H', snac[3][:2])[0]
+        motd_msg_type = struct.unpack('!H', snac[5][:2])[0]
         if MOTDS.has_key(motd_msg_type):
-            tlvs = readTLVs(snac[3][2:])
+            tlvs = readTLVs(snac[5][2:])
             motd_msg_string = tlvs[0x0b]
 
     def oscar_01_21(self,snac):
         """
         Receive extended status info
         """
-        v = snac[3]
+        v = snac[5]
         log.msg('Received extended status info for %s: %s' % (self.username, str(snac)))
 
         while len(v)>4 and ord(v[0]) == 0 and ord(v[3]) != 0:
@@ -1058,14 +1070,14 @@ class BOSConnection(SNACBased):
         """
         location rights response
         """
-        tlvs = readTLVs(snac[3])
+        tlvs = readTLVs(snac[5])
         self.maxProfileLength = tlvs[1]
 
     def oscar_03_03(self, snac):
         """
         buddy list rights response
         """
-        tlvs = readTLVs(snac[3])
+        tlvs = readTLVs(snac[5])
         self.maxBuddies = tlvs[1]
         self.maxWatchers = tlvs[2]
 
@@ -1073,19 +1085,19 @@ class BOSConnection(SNACBased):
         """
         buddy update
         """
-        self.updateBuddy(self.parseUser(snac[3]))
+        self.updateBuddy(self.parseUser(snac[5]))
 
     def oscar_03_0C(self, snac):
         """
         buddy offline
         """
-        self.offlineBuddy(self.parseUser(snac[3]))
+        self.offlineBuddy(self.parseUser(snac[5]))
 
     def oscar_04_01(self, snac):
         """
         ICBM Error
         """
-        data = snac[3]
+        data = snac[5]
         errorcode = struct.unpack('!H',data[:2])[0]
         data = data[2:]
         if errorcode==0x04:
@@ -1113,7 +1125,7 @@ class BOSConnection(SNACBased):
         """
         ICBM message (instant message)
         """
-        data = snac[3]
+        data = snac[5]
         cookie, data = data[:8], data[8:]
         channel = struct.unpack('!H',data[:2])[0]
         log.msg("channel = %d" % (channel))
@@ -1361,7 +1373,7 @@ class BOSConnection(SNACBased):
         """
         client/server typing notifications
         """
-        data = snac[3]
+        data = snac[5]
         scrnnamelen = int(struct.unpack('B',data[10:11])[0])
         scrnname = str(data[11:11+scrnnamelen])
         typestart = 11+scrnnamelen+1
@@ -1383,7 +1395,7 @@ class BOSConnection(SNACBased):
         """
         BOS rights response
         """
-        tlvs = readTLVs(snac[3])
+        tlvs = readTLVs(snac[5])
         self.maxPermitList = tlvs[1]
         self.maxDenyList = tlvs[2]
 
@@ -1391,27 +1403,27 @@ class BOSConnection(SNACBased):
         """
         stats reporting interval
         """
-        self.reportingInterval = struct.unpack('!H',snac[3][:2])[0]
+        self.reportingInterval = struct.unpack('!H',snac[5][:2])[0]
 
     def oscar_13_03(self, snac):
         """
         SSI rights response
         """
-        #tlvs = readTLVs(snac[3])
+        #tlvs = readTLVs(snac[5])
         pass # we don't know how to parse this
 
     def oscar_13_08(self, snac):
         # SSI Edit: add items
         # Why does this come to the client?
         pass
-        #uinLen = ord(snac[3][pos])
-        #uin = snac[3][pos+1:pos+1+uinLen]
+        #uinLen = ord(snac[5][pos])
+        #uin = snac[5][pos+1:pos+1+uinLen]
 
     def oscar_13_0E(self, snac):
         """
         SSI modification response
         """
-        #tlvs = readTLVs(snac[3])
+        #tlvs = readTLVs(snac[5])
         pass # we don't know how to parse this
 
     def oscar_13_19(self, snac):
@@ -1419,12 +1431,12 @@ class BOSConnection(SNACBased):
         Got authorization request
         """
         pos = 0
-        #if 0x80 & snac[0] or 0x80 & snac[1]:
-        #    sLen,id,length = struct.unpack(">HHH", snac[3][:6])
+        #if 0x80 & snac[2] or 0x80 & snac[3]:
+        #    sLen,id,length = struct.unpack(">HHH", snac[5][:6])
         #    pos = 6 + length
-        uinlen = ord(snac[3][pos])
+        uinlen = ord(snac[5][pos])
         pos += 1
-        uin = snac[3][pos:pos+uinlen]
+        uin = snac[5][pos:pos+uinlen]
         pos += uinlen
         self.gotAuthorizationRequest(uin)
 
@@ -1433,18 +1445,18 @@ class BOSConnection(SNACBased):
         Got authorization response
         """
         pos = 0
-        #if 0x80 & snac[0] or 0x80 & snac[1]:
-        #    sLen,id,length = struct.unpack(">HHH", snac[3][:6])
+        #if 0x80 & snac[2] or 0x80 & snac[3]:
+        #    sLen,id,length = struct.unpack(">HHH", snac[5][:6])
         #    pos = 6 + length
-        uinlen = ord(snac[3][pos])
+        uinlen = ord(snac[5][pos])
         pos += 1
-        uin = snac[3][pos:pos+uinlen]
+        uin = snac[5][pos:pos+uinlen]
         pos += uinlen
-        success = ord(snac[3][pos])
+        success = ord(snac[5][pos])
         pos += 1
-        reasonlen = struct.unpack(">H", snac[3][pos:pos+2])[0]
+        reasonlen = struct.unpack(">H", snac[5][pos:pos+2])[0]
         pos += 2
-        reason = snac[3][pos:]
+        reason = snac[5][pos:]
         if success:
             # authorization request successfully granted
             self.gotAuthorizationResponse(uin, True)
@@ -1457,12 +1469,12 @@ class BOSConnection(SNACBased):
         SSI Your were added to someone's buddylist
         """
         pos = 0
-        #if 0x80 & snac[0] or 0x80 & snac[1]:
-        #    sLen,id,length = struct.unpack(">HHH", snac[3][:6])
+        #if 0x80 & snac[2] or 0x80 & snac[3]:
+        #    sLen,id,length = struct.unpack(">HHH", snac[5][:6])
         #    pos = 6 + length
-        #    val = snac[3][4:pos]
-        uinLen = ord(snac[3][pos])
-        uin = snac[3][pos+1:pos+1+uinLen]
+        #    val = snac[5][4:pos]
+        uinLen = ord(snac[5][pos])
+        uin = snac[5][pos+1:pos+1+uinLen]
         self.youWereAdded(uin)
 
     # methods to be called by the client, and their support methods
@@ -1486,7 +1498,7 @@ class BOSConnection(SNACBased):
         """
         Meta information (Offline messages, extended info about users)
         """
-        tlvs = readTLVs(snac[3])
+        tlvs = readTLVs(snac[5])
         for k, v in tlvs.items():
             if (k == 1):
                 targetuin,type = struct.unpack('<IH',v[2:8])
@@ -1978,7 +1990,7 @@ class BOSConnection(SNACBased):
             #d.arm()
             # CHECKME, something was happening here involving getting a snac packet
             # that didn't have [2:] in it...
-            self.oscar_01_05(snac[2:], d)
+            self.oscar_01_05(snac, d)
         else:
             self.connectionFailed()
 
@@ -2257,6 +2269,7 @@ class BOSConnection(SNACBased):
         return self.sendSNAC(0x02, 0x05, '\x00\x03'+chr(len(user))+user).addCallback(self._cbGetAway)
 
     def _cbGetAway(self, snac):
+        log.msg("_cbGetAway %r" % snac)
         user, rest = self.parseUser(snac[5],1)
         tlvs = readTLVs(rest)
         return [tlvs.get(0x03,None),tlvs.get(0x04,None)] # return None if there is no away message
@@ -2495,7 +2508,7 @@ class ChatService(OSCARService):
 
     def oscar_0E_02(self, snac):
 #        try: # this is EVIL
-#            data = snac[3][4:]
+#            data = snac[5][4:]
 #            self.exchange, length = struct.unpack('!HB',data[:3])
 #            self.fullName = data[3:3+length]
 #            self.instance = struct.unpack('!H',data[3+length:5+length])[0]
@@ -2503,7 +2516,7 @@ class ChatService(OSCARService):
 #            self.name = tlvs[0xd3]
 #            self.d.callback(self)
 #        except KeyError:
-        data = snac[3]
+        data = snac[5]
         self.exchange, length = struct.unpack('!HB',data[:3])
         self.fullName = data[3:3+length]
         self.instance = struct.unpack('!H',data[3+length:5+length])[0]
@@ -2513,7 +2526,7 @@ class ChatService(OSCARService):
 
     def oscar_0E_03(self,snac):
         users=[]
-        rest=snac[3]
+        rest=snac[5]
         while rest:
             user, rest = self.bos.parseUser(rest, 1)
             users.append(user)
@@ -2524,15 +2537,15 @@ class ChatService(OSCARService):
             self.bos.chatMemberJoined(self,users[0])
 
     def oscar_0E_04(self,snac):
-        user=self.bos.parseUser(snac[3])
+        user=self.bos.parseUser(snac[5])
         for u in self.members:
             if u.name == user.name: # same person!
                 self.members.remove(u)
         self.bos.chatMemberLeft(self,user)
 
     def oscar_0E_06(self,snac):
-        data = snac[3]
-        user,rest=self.bos.parseUser(snac[3][14:],1)
+        data = snac[5]
+        user,rest=self.bos.parseUser(snac[5][14:],1)
         tlvs = readTLVs(rest[8:])
         message=tlvs[1]
         self.bos.chatReceiveMessage(self,user,message)
@@ -2762,7 +2775,7 @@ class EmailService(OSCARService):
         self.clientReady()
 
     def oscar_18_07(self,snac):
-        snacData = snac[3]
+        snacData = snac[5]
         cookie1 = snacData[8:16]
         cookie2 = snacData[16:24]
         cnt = int(struct.unpack('>H', snacData[24:26])[0])
