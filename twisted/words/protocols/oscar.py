@@ -2248,7 +2248,7 @@ class BOSConnection(SNACBased):
 
     def _cbGetShortInfo(self, snac):
         nick,first,last,email = self.parseBasicInfo(snac[5][16:])
-        return [nick,first,last,email]
+        return nick,first,last,email
 
     def requestOffline(self):
         """
@@ -2988,7 +2988,7 @@ class SSBIService(OSCARService):
         else:
             icondata = None
         self.disconnect()
-        return (scrnname,iconcsumtype,iconcsum,iconlen,icondata)
+        return scrnname,iconcsumtype,iconcsum,iconlen,icondata
 
     def _cbAIMIconRequestError(self, error):
         log.msg("GOT AIM ICON REQUEST ERROR %s" % error)
