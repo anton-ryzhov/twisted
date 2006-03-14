@@ -181,6 +181,8 @@ class OSCARUser:
         self.warning = warn
         self.flags = []
         self.caps = []
+        self.icqStatus = None
+        self.icqFlags = []
         self.icqIPaddy = None
         self.icqLANIPaddy = None
         self.icqLANIPport = None
@@ -219,27 +221,37 @@ class OSCARUser:
                 self.idleTime = struct.unpack('!H',v)[0]
             elif k == 0x0005: # member since
                 self.memberSince = struct.unpack('!L',v)[0]
-            elif k == 0x0006: # icq online status
-                if   v[0:2] == '\x00\x00\x00':
+            elif k == 0x0006: # icq online status and flags
+                # Flags first
+                if   v[0:2] == '\x00\x01':
+                    self.icqFlags.append('webaware')
+                elif v[0:2] == '\x00\x02':
+                    self.icqFlags.append('showip')
+                elif v[0:2] == '\x00\x08':
+                    self.icqFlags.append('birthday')
+                elif v[0:2] == '\x00\x20':
+                    self.icqFlags.append('webfront')
+                elif v[0:2] == '\x01\x00':
+                    self.icqFlags.append('dcdisabled')
+                elif v[0:2] == '\x10\x00':
+                    self.icqFlags.append('dcauth')
+                elif v[0:2] == '\x20\x00':
+                    self.icqFlags.append('dccont')
+    
+                if   v[2:4] == '\x00\x00':
                     self.icqStatus = 'online'
-                elif v[0:2] == '\x00\x00\x01':
+                elif v[2:4] == '\x00\x01':
                     self.icqStatus = 'away'
-                elif v[0:2] == '\x00\x00\x02':
+                elif v[2:4] == '\x00\x02':
                     self.icqStatus = 'dnd'
-                elif v[0:2] == '\x00\x00\x04':
+                elif v[2:4] == '\x00\x04':
                     self.icqStatus = 'xa'
-                elif v[0:2] == '\x00\x00\x10':
+                elif v[2:4] == '\x00\x10':
                     self.icqStatus = 'busy'
-                elif v[0:2] == '\x00\x00\x20':
+                elif v[2:4] == '\x00\x20':
                     self.icqStatus = 'chat'
-                elif v[0:2] == '\x00\x01\x00':
+                elif v[2:4] == '\x01\x00':
                     self.icqStatus = 'invisible'
-                elif v[0:2] == '\x01\x00\x00':
-                    self.icqStatus = 'webaware'
-                elif v[0:2] == '\x02\x00\x00':
-                    self.icqStatus = 'hideip'
-                elif v[0:2] == '\x08\x00\x00':
-                    self.icqStatus = 'birthday'
                 else:
                     self.icqStatus = 'unknown'
             elif k == 0x0008: # client type?
