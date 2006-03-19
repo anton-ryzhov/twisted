@@ -173,6 +173,42 @@ def getIconSum(buf):
 
     return sum
 
+# Originally taken from:
+# http://www.pyzine.com/Issue008/Section_Articles/article_Encodings.html
+# which was adapted from io.py
+# in the docutils extension module
+# see http://docutils.sourceforge.net
+# modified for better use here
+def guess_encoding(data, defaultencoding='iso-8859-1'):
+    """
+    Given a byte string, attempt to decode it.
+    Tries 'utf-16be, 'utf-8' and 'iso-8859-1' (or something else) encodings.
+    
+    If successful it returns 
+        (decoded_unicode, successful_encoding)
+    If unsuccessful it raises a ``UnicodeError``
+    """
+    successful_encoding = None
+    encodings = ['utf-16be', 'utf-8', defaultencoding]
+    for enc in encodings:
+        # some of the locale calls 
+        # may have returned None
+        if not enc:
+            continue
+        try:
+            decoded = unicode(data, enc)
+            successful_encoding = enc
+
+        except (UnicodeError, LookupError):
+            pass
+        else:
+            break
+    if not successful_encoding:
+         raise UnicodeError(
+        'Unable to decode input data.  Tried the following encodings: %s.'
+        % ', '.join([repr(enc) for enc in encodings if enc]))
+    else:
+         return (decoded, successful_encoding)
 
 
 class OSCARUser:
@@ -760,6 +796,9 @@ class BOSConnection(SNACBased):
         self.socksProxyServer = None
         self.socksProxyPort = None
         self.connectPort = 5190
+        # Note that this is "no unicode" default encoding
+        # We use unicode if it's there
+        self.defaultEncoding = 'iso-8859-1'
 
         if not self.capabilities:
             self.capabilities = [CAP_CHAT]
@@ -1515,15 +1554,19 @@ class BOSConnection(SNACBased):
             if (k == 1):
                 targetuin,type = struct.unpack('<IH',v[2:8])
                 if (type == 0x41):
+                    log.msg("Received Offline Message: %r" % (v))
                     # Offline message
                     senderuin = struct.unpack('<I',v[10:14])[0]
                     #print "senderuin: "+str(senderuin)+"\n"
                     msg_date = str( "%4d-%02d-%02d %02d:%02d"
                                     % struct.unpack('<HBBBB', v[14:20]) )
                     messagetype, messageflags,messagelen = struct.unpack('<BBH',v[20:24])
-                    message = [ str( v[24:24+messagelen-1] )
-                                + "\n\n/sent " + msg_date ]
-                    log.msg("What the fuck?  %r - %r - %r - %r - %r - %r" % (senderuin, messagetype, messageflags, messagelen, msg_date, message))
+                    umessage, encoding = guess_encoding(v[24:24+messagelen-1],self.defaultEncoding)
+                    log.msg("Converted message, encoding %r: %r" % (encoding, umessage))
+                    umessage = umessage + "\n\n/sent " + msg_date
+                    message = [ umessage.encode("utf-16be"), "unicode" ]
+                    #message = [ str( v[24:24+messagelen-1] )
+                    #            + "\n\n/sent " + msg_date ]
 
                     if (messagelen > 0):
                         flags = []
