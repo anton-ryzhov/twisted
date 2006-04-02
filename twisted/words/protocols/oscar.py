@@ -217,7 +217,7 @@ class OSCARUser:
         self.warning = warn
         self.flags = []
         self.caps = []
-        self.icqStatus = None
+        self.icqStatus = []
         self.icqFlags = []
         self.icqIPaddy = None
         self.icqLANIPaddy = None
@@ -259,37 +259,26 @@ class OSCARUser:
                 self.memberSince = struct.unpack('!L',v)[0]
             elif k == 0x0006: # icq online status and flags
                 # Flags first
-                if   v[0:2] == '\x00\x01':
-                    self.icqFlags.append('webaware')
-                elif v[0:2] == '\x00\x02':
-                    self.icqFlags.append('showip')
-                elif v[0:2] == '\x00\x08':
-                    self.icqFlags.append('birthday')
-                elif v[0:2] == '\x00\x20':
-                    self.icqFlags.append('webfront')
-                elif v[0:2] == '\x01\x00':
-                    self.icqFlags.append('dcdisabled')
-                elif v[0:2] == '\x10\x00':
-                    self.icqFlags.append('dcauth')
-                elif v[0:2] == '\x20\x00':
-                    self.icqFlags.append('dccont')
-    
-                if   v[2:4] == '\x00\x00':
-                    self.icqStatus = 'online'
-                elif v[2:4] == '\x00\x01':
-                    self.icqStatus = 'away'
-                elif v[2:4] == '\x00\x02':
-                    self.icqStatus = 'dnd'
-                elif v[2:4] == '\x00\x04':
-                    self.icqStatus = 'xa'
-                elif v[2:4] == '\x00\x10':
-                    self.icqStatus = 'busy'
-                elif v[2:4] == '\x00\x20':
-                    self.icqStatus = 'chat'
-                elif v[2:4] == '\x01\x00':
-                    self.icqStatus = 'invisible'
-                else:
-                    self.icqStatus = 'unknown'
+                mv=struct.unpack('!H',v[0:2])[0]
+                for o, f in [(0x0001,'webaware'),
+                             (0x0002,'showip'),
+                             (0x0008,'birthday'),
+                             (0x0020,'webfront'),
+                             (0x0100,'dcdisabled'),
+                             (0x1000,'dcauth'),
+                             (0x2000,'dccont')]:
+                    if mv&o: self.icqFlags.append(f)
+
+                # Status flags next
+                mv=struct.unpack('!H',v[2:4])[0]
+                for o, f in [(0x0000,'online'),
+                             (0x0001,'away'),
+                             (0x0002,'dnd'),
+                             (0x0004,'xa'),
+                             (0x0010,'busy'),
+                             (0x0020,'chat'),
+                             (0x0100,'invisible')]:
+                    if mv&o: self.icqStatus.append(f)
             elif k == 0x0008: # client type?
                 pass
             elif k == 0x000a: # icq user ip address
