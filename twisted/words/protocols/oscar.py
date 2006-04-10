@@ -71,7 +71,7 @@ def readSNAC(data):
         datapos = datapos + 6 + length
     return head+[data[datapos:]]
 
-def TLV(type,value):
+def TLV(type,value=''):
     head=struct.pack("!HH",type,len(value))
     return head+str(value)
 
@@ -189,7 +189,7 @@ def guess_encoding(data, defaultencoding='iso-8859-1'):
     If unsuccessful it raises a ``UnicodeError``
     """
     successful_encoding = None
-    encodings = ['utf-16be', 'utf-8', defaultencoding]
+    encodings = ['utf-8', 'utf-16be', defaultencoding]
     for enc in encodings:
         # some of the locale calls 
         # may have returned None
@@ -197,6 +197,7 @@ def guess_encoding(data, defaultencoding='iso-8859-1'):
             continue
         try:
             decoded = unicode(data, enc)
+            #decoded = data.decode(enc)
             successful_encoding = enc
 
         except (UnicodeError, LookupError):
@@ -475,7 +476,7 @@ class SSIBuddy:
         data = struct.pack(">H", len(self.name)) + self.name
         tlvs = ""
         if not self.authorized:
-            tlvs += TLV(0x0066, "") # awaiting authorization
+            tlvs += TLV(0x0066) # awaiting authorization
         if self.nick:
             tlvs += TLV(0x0131, self.nick)
         if self.email:
@@ -1905,58 +1906,59 @@ class BOSConnection(SNACBased):
         if iconLen, iconSum, and iconStamp, we have a buddy icon and want user to know
         if wantIcon, we want their buddy icon, tell us if you have it
         """
-        data = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
-        data = data + '\x00\x01' + chr(len(user)) + user
+        cookie = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
+        data = cookie + struct.pack("!HB", 0x0001, len(user)) + user
         if not type(message) in (types.TupleType, types.ListType):
             message = [[message,]]
             if type(message[0][0]) == types.UnicodeType:
                 message[0].append('unicode')
         messageData = ''
         for part in message:
-            charSet = 0
+            charSet = 0x0000
             if 'none' in part[1:]:
                 charSet = 0xffff
             else:
                 try:
-                    part[0] = part[0].encode('iso-8859-1')
-                    charSet = 3
+                    part[0] = part[0].encode('ascii')
+                    charSet = 0x0000
                 except:
                     try:
-                        part[0] = part[0].encode('utf-16be', 'replace')
-                        charSet = 2
+                        part[0] = part[0].encode('iso-8859-1')
+                        charSet = 0x0003
                     except:
-                        #part[0] = repl(part[0]).encode('i18-8859-1', 'replace')
-                        part[0] = part[0].encode('iso-8859-1', 'replace')
-                        charSet = 3
-            #if 'unicode' in part[1:]:
-            #    charSet = 2
-            #    part[0] = part[0].encode('utf-16be', 'replace')
-            #elif 'iso-8859-1' in part[1:]:
-            #    charSet = 3
-            #    part[0] = part[0].encode('iso-8859-1', 'replace')
-            #elif 'none' in part[1:]:
-            #    charSet = 0xffff
+                        try:
+                            part[0] = part[0].encode('utf-16be', 'replace')
+                            charSet = 0x0002
+                        except:
+                            part[0] = part[0].encode('iso-8859-1', 'replace')
+                            charSet = 0x0003
             if 'macintosh' in part[1:]:
-                charSubSet = 0xb
+                charSubSet = 0x000b
+            elif 'none' in part[1:]:
+                charSubSet = 0xffff
             else:
-                charSubSet = 0
-            messageData = messageData + '\x01\x01' + \
-                          struct.pack('!3H',len(part[0])+4,charSet,charSubSet)
-            messageData = messageData + part[0]
-        data = data.encode('iso-8859-1', 'replace') + TLV(2, '\x05\x01\x00\x03\x01\x01\x02'+messageData)
+                charSubSet = 0x0000
+            messageData = messageData + struct.pack('!HHHH',0x0101,len(part[0])+4,charSet,charSubSet) + part[0]
+
+        # We'll investigate this in more detail later.
+        features = '\x01\x01\x02'
+        # Why do i need to encode this?  I shouldn't .. it's data.
+        data = data.encode('iso-8859-1', 'replace') + TLV(2, TLV(0x0501, features)+messageData)
         if wantAck:
             log.msg("sendMessage: Sending wanting ACK")
-            data = data + TLV(3,'')
+            data = data + TLV(3)
         if autoResponse:
             log.msg("sendMessage: Sending as an auto-response")
-            data = data + TLV(4,'')
+            data = data + TLV(4)
         if offline:
             log.msg("sendMessage: Sending offline")
-            data = data + TLV(6,'')
+            data = data + TLV(6)
         if iconSum and iconLen and iconStamp:
+            log.msg("sendMessage: Sending info about our icon")
             data = data + TLV(8,struct.pack('!IHHI', iconLen, 0x0001, iconSum, iconStamp))
         if wantIcon:
-            data = data + TLV(9,'')
+            log.msg("sendMessage: Sending request for their icon")
+            data = data + TLV(9)
         if wantAck:
             return self.sendSNAC(0x04, 0x06, data).addCallback(self._cbSendMessageAck, user, message)
         self.sendSNACnr(0x04, 0x06, data)
@@ -1972,13 +1974,13 @@ class BOSConnection(SNACBased):
         cookie = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
         intdata = '\x00\x00'+cookie+CAP_CHAT
         intdata = intdata + TLV(0x0a,'\x00\x01')
-        intdata = intdata + TLV(0x0f,'')
+        intdata = intdata + TLV(0x0f)
         intdata = intdata + TLV(0x0d,'us-ascii')
         intdata = intdata + TLV(0x0c,'Please join me in this Chat.')
         intdata = intdata + TLV(0x2711,struct.pack('!HB',chatroom.exchange,len(chatroom.fullName))+chatroom.fullName+struct.pack('!H',chatroom.instance))
         data = cookie+'\x00\x02'+chr(len(user))+user+TLV(5,intdata)
         if wantAck:
-            data = data + TLV(3,'')
+            data = data + TLV(3)
             return self.sendSNAC(0x04, 0x06, data).addCallback(self._cbSendInviteAck, user, chatroom)
         self.sendSNACnr(0x04, 0x06, data)
 
@@ -1994,7 +1996,7 @@ class BOSConnection(SNACBased):
         cookie = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
         intdata = '\x00\x00'+cookie+CAP_ICON
         intdata = intdata + TLV(0x0a,'\x00\x01')
-        intdata = intdata + TLV(0x0f,'')
+        intdata = intdata + TLV(0x0f)
 
         iconlen = len(icon)
         iconsum = getIconSum(icon)
@@ -2004,7 +2006,7 @@ class BOSConnection(SNACBased):
 
         data = cookie+'\x00\x02'+chr(len(user))+user+TLV(5,intdata)
         if wantAck:
-            data = data + TLV(3,'')
+            data = data + TLV(3)
             return self.sendSNAC(0x04, 0x06, data).addCallback(self._cbSendIconNotify, user, icon)
         self.sendSNACnr(0x04, 0x06, data)
 
@@ -2551,15 +2553,6 @@ class ChatService(OSCARService):
         self.clientReady()
 
     def oscar_0E_02(self, snac):
-#        try: # this is EVIL
-#            data = snac[5][4:]
-#            self.exchange, length = struct.unpack('!HB',data[:3])
-#            self.fullName = data[3:3+length]
-#            self.instance = struct.unpack('!H',data[3+length:5+length])[0]
-#            tlvs = readTLVs(data[8+length:])
-#            self.name = tlvs[0xd3]
-#            self.d.callback(self)
-#        except KeyError:
         data = snac[5]
         self.exchange, length = struct.unpack('!HB',data[:3])
         self.fullName = data[3:3+length]
@@ -2599,8 +2592,8 @@ class ChatService(OSCARService):
         tlvs=TLV(0x02,"us-ascii")+TLV(0x03,"en")+TLV(0x01,message)
         data = ''.join([chr(random.randrange(0, 127)) for i in range(8)]) # cookie
         data = data + "\x00\x03" # message channel 3
-        data = data + TLV(1, '') # this is for a chat room
-        data = data + TLV(6, '') # reflect message back to us
+        data = data + TLV(1) # this is for a chat room
+        data = data + TLV(6) # reflect message back to us
         data = data + TLV(5, tlvs) # our actual message data
         self.sendSNACnr(0x0e, 0x05, data)
         #self.sendSNAC(0x0e,0x05,
@@ -2623,83 +2616,9 @@ class DirectoryService(OSCARService):
         self.clientReady()
 
     def sendDirectorySearchByEmail(self, email):
-        #if email.
-        # 00 1c 00 08 75 73 2d 61 73 63 69 69 00 0a 00 02 00 01 00 05
-        # .  .  .  .  u  s  -  a  s  c  i  i  .  .  .  .  .  .  .  .
-
-        # 00 13 6a 61 64 65 73 74 6f 72 6d 40 6e 63 2e 72 72 2e 63 6f 6d
-        # .  .  j  a  d  e  s  t  o  r  m  @  n  c  .  r  r  .  c  o  m
-
-        # 00 0a = standard
-        # 00 02 = standard
-        # 00 01 =
-        # 00 05 = (email address?)
-        # 00 13 = length
-
         return self.sendSNAC(0x0f, 0x02, '\x00\x1c\x00\x08us-ascii\x00\x0a\x00\x02\x00\x01'+TLV(0x05, email)).addCallback(self._cbGetDirectoryInfo).addErrback(self._cbGetDirectoryError)
 
     def sendDirectorySearchByNameAddr(self, first=None, middle=None, last=None, maiden=None, nickname=None, address=None, city=None, state=None, zip=None, country=None):
-        # Must give at least a first or last name, all others optional
-
-        # 00 1c 00 08 75 73 2d 61 73 63 69 69 00 0a 00 02 00 00 00 01
-        # .  .  .  .  u  s  -  a  s  c  i  i  .  .  .  .  .  .  .  .
-
-        # 00 06 44 61 6e 69 65 6c 00 02 00 09 48 65 6e 6e 69 6e 67 65 72
-        # .  .  D  a  n  i  e  l  .  .  .  .  H  e  n  n  i  n  g  e  r
-
-        # 00 0a = standard
-        # 00 02 = standard
-        # 00 00 =
-
-        # 00 01 = (first name?)
-        # 00 06 = length
-
-        # 00 02 = (last name?)
-        # 00 09 = length
-
-
-        # All fields entered:
-
-        # 00 1c 00 08 75 73 2d 61 73 63 69 69 00 0a 00 02 00 00 00 01
-        # .  .  .  .  u  s  -  a  s  c  i  i  .  .  .  .  .  .  .  .
-
-        # 00 06 44 61 6e 69 65 6c 00 02 00 09 48 65 6e 6e 69 6e 67 65 72
-        # .  .  D  a  n  i  e  l  .  .  .  .  H  e  n  n  i  n  g  e  r
-
-        # 00 03 00 04 41 64 61 6d 00 04 00 0a 48 65 6e 6e 69 63 67 74 6f
-        # .  .  .  .  A  d  a  m  .  .  .  .  H  e  n  n  i  n  g  t  o
-
-        # 6e 00 06 00 02 55 53 00 07 00 02 4e 43 00 08 00 06 47 61 72 6e
-        # n  .  .  .  .  U  S  .  .  .  .  N  C  .  .  .  .  G  a  r  n
-
-        # 65 72 00 0c 00 05 4e 69 6e 6a 61 00 0d 00 05 32 37 35 32 39 00
-        # e  r  .  .  .  .  N  i  n  j  a  .  .  .  .  2  7  5  2  9  .
-
-        # 21 00 13 31 30 35 20 42 72 6f 6f 6b 20 52 6f 63 6b 20 4c 61 6e
-        # .  .  .  1  0  5     B  r  o  o  k     R  o  c  k     L  a  n
-
-        # 65
-        # e
-
-        # 00 0a = standard
-        # 00 02 = standard
-        # 00 00 = unknown  0 for multi search, 1 for single entity search
-
-        # then, type, length, value pairs
-        # types
-        # 00 01 = first name
-        # 00 02 = last name
-        # 00 03 = middle name
-        # 00 04 = maiden name
-        # 00 05 = email address
-        # 00 06 = country (ab)
-        # 00 07 = state (ab)
-        # 00 08 = city
-        # 00 0b = interest
-        # 00 0c = nickname
-        # 00 0d = zip code
-        # 00 21 = street address
-
         snacData = '\x00\x1c\x00\x08us-ascii\x00\x0a\x00\x02\x00\x00'
         if (first): snacData = snacData + TLV(0x01, first)
         if (last): snacData = snacData + TLV(0x02, last)
@@ -2714,27 +2633,9 @@ class DirectoryService(OSCARService):
         return self.sendSNAC(0x0f, 0x02, snacData).addCallback(self._cbGetDirectoryInfo).addErrback(self._cbGetDirectoryError)
 
     def sendDirectorySearchByInterest(self, interest):
-        # official list of interests pulled from server
-
-        # 00 1c 00 08 75 73 2d 61 73 63 69 69 00 0a 00 02 00 01 00 0b
-        # .  .  .  .  u  s  -  a  s  c  i  i  .  .  .  .  .  .  .  .
-
-        # 00 09 45 64 75 63 61 74 69 6f 6e
-        # .  .  E  d  u  c  a  t  i  o  n
-
-        # 00 0a = standard
-        # 00 02 = standard
-        # 00 01 =
-        # 00 0b = (interest?)
-        # 00 09 = length
-
         return self.sendSNAC(0x0f, 0x02, '\x00\x1c\x00\x08us-ascii\x00\x0a\x00\x02\x00\x01'+TLV(0x0b, interest)).addCallback(self._cbGetDirectoryInfo).addErrback(self._cbGetDirectoryError)
 
     def _cbGetDirectoryInfo(self, snac):
-        #\x00\x07\x00\x00  if error?
-        #\x00\x05\x00\x00  seems to be success
-        #Got directory info [15, 3, 0, 0, 1L, '\x00\x05\x00\x00\x00\x01\x00\x01\x00\t\x00\x0cthejadestorm']
-        #Received directory info [15, 3, 0, 0, 1L, '\x00\x07\x00\x00\x00\x01\x00\x01\x00\x04\x00\x12http://www.aol.com']
         log.msg("Received directory info %s" % snac)
         results = []
         snacData = snac[5]
@@ -2866,13 +2767,13 @@ class AdminService(OSCARService):
         self.clientReady()
 
     def requestFormattedScreenName(self):
-        return self.sendSNAC(0x07, 0x02, TLV(0x01, "")).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
+        return self.sendSNAC(0x07, 0x02, TLV(0x01)).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
 
     def requestEmailAddress(self):
-        return self.sendSNAC(0x07, 0x02, TLV(0x11, "")).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
+        return self.sendSNAC(0x07, 0x02, TLV(0x11)).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
 
     def requestRegistrationStatus(self):
-        return self.sendSNAC(0x07, 0x02, TLV(0x13, "")).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
+        return self.sendSNAC(0x07, 0x02, TLV(0x13)).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
 
     def changePassword(self, oldpassword, newpassword):
         return self.sendSNAC(0x07, 0x04, TLV(0x02, newpassword)+TLV(0x12, oldpassword)).addCallback(self._cbInfoResponse).addErrback(self._cbInfoResponseError)
@@ -2998,34 +2899,17 @@ class SSBIService(OSCARService):
         return self.sendSNAC(0x10, 0x04, struct.pack('!B', len(contact))+contact+"\x01\x00\x01"+struct.pack('!B', iconflags)+struct.pack('!B', len(iconhash))+iconhash).addCallback(self._cbAIMIconRequest).addErrback(self._cbAIMIconRequestError)
 
     def _cbAIMIconRequest(self, snac):
-        #log.msg("Got Icon Request (AIM): %s" % (str(snac)))
-        #\n
-        #arlydwycka
-        #\x00\x01
-        #\x01
-        #\x10
-        #\xc7\x17`eF\x14\xc8\xd2l\xec\xf7\x9d\xcd\xe5\xde\x06
-        #\x00\x00
         v = snac[5]
         scrnnamelen = int((struct.unpack('!B', v[0]))[0])
-        #log.msg("scrnnamelen: %d" % scrnnamelen)
         scrnname = v[1:1+scrnnamelen]
-        #log.msg("scrnname: %s" % scrnname)
         p = 1+scrnnamelen
         flags,iconcsumtype,iconcsumlen = struct.unpack('!HBB', v[p:p+4])
         iconcsumlen = int(iconcsumlen)
         p = p+4
-        #log.msg("Where are we: %s" % binascii.hexlify(v[p:]))
-        #\xc7\x17`eF\x14\xc8\xd2l\xec\xf7\x9d\xcd\xe5\xde\x06\x00\x00
         iconcsum = v[p:p+iconcsumlen]
-        #log.msg("iconhash: %s" % binascii.hexlify(iconhash))
         p = p+iconcsumlen
-        #log.msg("Where are we now: %s" % binascii.hexlify(v[p:]))
         iconlen = int((struct.unpack('!H', v[p:p+2]))[0])
-        #log.msg("iconlen: %d" % iconlen)
         p = p + 2
-        #log.msg("Where are we now: %s" % binascii.hexlify(v[p:]))
-        #log.msg("The icon we can see is: %s" % binascii.hexlify(v[p:p+iconlen]))
         log.msg("Got Icon Request (AIM): %s, %s, %d" % (scrnname, binascii.hexlify(iconcsum), iconlen))
         if iconlen > 0 and iconlen != 90:
             icondata = v[p:p+iconlen]
@@ -3062,7 +2946,7 @@ class OscarAuthenticator(OscarConnection):
             self.sendFLAP("\000\000\000\001", 0x01)
             self.sendFLAP(SNAC(0x17,0x06,0,
                                TLV(TLV_USERNAME,self.username)+
-                               TLV(0x004B,'')))
+                               TLV(0x004B)))
             self.state="Key"
         else:
             # stupid max password length...
@@ -3116,7 +3000,7 @@ class OscarAuthenticator(OscarConnection):
         self.sendFLAP(SNAC(0x17,0x02,0,
                            TLV(TLV_USERNAME,self.username)+
                            TLV(TLV_PASSWORD,encpass)+
-                           TLV(0x004C, '')+ # unknown
+                           TLV(0x004C)+ # unknown
                            TLV(TLV_CLIENTNAME,"AOL Instant Messenger (SM), version 5.1.3036/WIN32")+
                            TLV(0x0016,"\x01\x09")+
                            TLV(TLV_CLIENTMAJOR,"\000\005")+
