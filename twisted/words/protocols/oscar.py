@@ -189,7 +189,8 @@ def guess_encoding(data, defaultencoding='iso-8859-1'):
     If unsuccessful it raises a ``UnicodeError``
     """
     successful_encoding = None
-    encodings = ['utf-8', 'utf-16be', defaultencoding]
+    #encodings = ['utf-8', 'utf-16be', defaultencoding]
+    encodings = ['utf-8', defaultencoding]
     for enc in encodings:
         # some of the locale calls 
         # may have returned None
