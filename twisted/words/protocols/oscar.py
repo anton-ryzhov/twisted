@@ -9,6 +9,7 @@ This module is unstable.
 
 Maintainer: U{Daniel Henninger<mailto:jadestorm@nc.rr.com>}
 Previous Maintainer: U{Paul Swartz<mailto:z3p@twistedmatrix.com>}
+SMS Related code by Uri Shaked <uri@keves.org>
 """
 
 from __future__ import nested_scopes
@@ -70,6 +71,22 @@ def readSNAC(data):
         sLen,id,length = struct.unpack(">HHH", data[datapos:datapos+6])
         datapos = datapos + 6 + length
     return head+[data[datapos:]]
+
+def oldICQCommand(commandCode, commandData, username, sequence):
+    """
+    Packs a command for the old ICQ server.
+    commandCode (int) - the code of the command,
+    commandData - the data payload of the command.
+    username (str) - The UIN of the sender
+    sequence (int) - The lower word of the SNAC ID that encapsulates the command.
+    """
+    header = "<HLHH"
+    head = struct.pack(header,
+                       struct.calcsize(header) + len(commandData) - 2,
+                       int(username),
+                       commandCode,
+                       sequence & 0xffff)
+    return head + commandData
 
 def TLV(type,value=''):
     head=struct.pack("!HH",type,len(value))
@@ -661,6 +678,25 @@ class SNACBased(OscarConnection):
 
         snac=SNAC(fam,sub,0x10000*fam+sub,data)
         self.scheduler.enqueue(fam,sub,snac)
+
+    def sendOldICQCommand(self,commandCode,commandData):
+        """
+        Sends a command to the old ICQ server.
+        commandCode - the code of the command to be sent
+        commandData - data payload.
+        """
+        reqid=self.lastID
+        self.lastID=reqid+1
+        d = defer.Deferred()
+        d.reqid = reqid
+
+        # Prepare the ICQ Command data
+        data = oldICQCommand(commandCode, commandData, self.username, reqid)
+
+        self.requestCallbacks[reqid] = d
+        snac=SNAC(0x15, 0x2, reqid, TLV(1, data))
+        self.scheduler.enqueue(0x15,0x2,snac)
+        return d
 
     def oscar_(self,data):
         self.sendFLAP("\000\000\000\001"+TLV(6,self.cookie), 0x01)
@@ -1966,6 +2002,34 @@ class BOSConnection(SNACBased):
 
     def _cbSendMessageAck(self, snac, user, message):
         return user, message
+
+    def sendSMS(self, phone, message, senderName = "Auto"):
+        """
+        Sends an SMS message through the ICQ server.
+        
+        phone (str) - Internation phone number to send to, digits only
+        message (str or unicode) - The message to send
+        senderName (str or unicode) - The sender name
+        """
+        message = u"""<icq_sms_message>
+                        <destination>%s</destination>
+                        <text>%s</text>
+                        <codepage>utf-8</codepage>
+                        <senders_UIN>%s</senders_UIN>
+                        <senders_name>%s</senders_name>
+                        <delivery_receipt>Yes</delivery_receipt>
+                        <time>%s</time>
+                      </icq_sms_message>""" % (phone,
+                                               message,
+                                               self.username,
+                                               senderName,
+                                               time.strftime("%a, %d %b %Y %T %Z"))
+ 
+        commandData = struct.pack('<H', 0x1482) # Subcommand code
+        commandData += struct.pack('!HH16x', 0x1, 0x16) # Unknown fields
+        commandData += TLV(0, message.encode('utf-8'))
+        
+        return self.sendOldICQCommand(0x7d0, commandData)
 
     def sendInvite(self, user, chatroom, wantAck = 0):
         """
