@@ -539,11 +539,49 @@ class SSIIconSum:
     def oscarRep(self):
         data = struct.pack(">H", len(self.name)) + self.name
         tlvs = TLV(0x00d5,struct.pack('!BB', 0x00, len(self.iconSum))+self.iconSum)+TLV(0x0131, "")
-        data += struct.pack(">4H", self.groupID, self.buddyID, 0x0014, len(tlvs))
+        data += struct.pack(">4H", self.groupID, self.buddyID, AIM_SSI_TYPE_ICONINFO, len(tlvs))
         return data+tlvs
 
     def __str__(self):
         s = '<SSIIconSum %s:%s (ID %d)' % (self.name, binascii.hexlify(self.iconSum), self.buddyID)
+        s=s+'>'
+        return s
+
+    def __repr__(self):
+        return self.__str__()
+
+
+class SSIPDInfo:
+    def __init__(self, name="", groupID=0x0000, buddyID=0xffff, tlvs = {}):
+        self.name = name
+        self.groupID = groupID
+        self.buddyID = buddyID
+        self.tlvs = tlvs
+        self.permitMode = tlvs.get(0xca, None)
+        self.visibility = tlvs.get(0xcb, None)
+
+    def oscarRep(self):
+        data = struct.pack(">H", len(self.name)) + self.name
+        tlvs = ""
+        if self.permitMode:
+            tlvs += TLV(0x00ca,struct.pack('!B', self.permitMode))
+        if self.visibility:
+            tlvs += TLV(0x00cb,self.visibility)
+        data += struct.pack(">4H", self.groupID, self.buddyID, AIM_SSI_TYPE_PDINFO, len(tlvs))
+        return data+tlvs
+
+    def __str__(self):
+        s = '<SSIPDInfo perm:'
+        if self.permitMode:
+            s=s+{0x01:'permitall',0x02:'denyall',0x03:'permitsome',0x04:'denysome',0x05:'permitbuddies'}.get(ord(self.permitMode),"unknown")
+        else:
+            s=s+"notset"
+        s=s+' visi:'
+        if self.visibility:
+            s=s+{'\xff\xff\xff\xff':'all','\x00\x00\x00\x04':'notaim'}.get(self.visibility,"unknown")
+        else:
+            s=s+"notset"
+        s=s+' (ID %d)' % (self.buddyID)
         s=s+'>'
         return s
 
@@ -1670,7 +1708,7 @@ class BOSConnection(SNACBased):
             return
         itemdata = snac[5][3:]
         if args:
-            revision, groups, permit, deny, permitMode, visibility, iconcksum = args
+            revision, groups, permit, deny, permitMode, visibility, iconcksum, permitDenyInfo = args
         else:
             version, revision = struct.unpack('!BH', snac[5][:3])
             groups = {}
@@ -1679,6 +1717,7 @@ class BOSConnection(SNACBased):
             permitMode = None
             visibility = None
             iconcksum = []
+            permitDenyInfo = None
         while len(itemdata)>4:
             nameLength = struct.unpack('!H', itemdata[:2])[0]
             name = itemdata[2:2+nameLength]
@@ -1697,6 +1736,7 @@ class BOSConnection(SNACBased):
             elif itemType == AIM_SSI_TYPE_DENY: # deny
                 deny.append(name)
             elif itemType == AIM_SSI_TYPE_PDINFO: # permit deny info
+                permitDenyInfo = SSIPDInfo(name, groupID, buddyID, tlvs)
                 if tlvs.has_key(0xca):
                     permitMode = {0x01:'permitall',0x02:'denyall',0x03:'permitsome',0x04:'denysome',0x05:'permitbuddies'}.get(ord(tlvs[0xca]),None)
                 if tlvs.has_key(0xcb):
@@ -1726,16 +1766,16 @@ class BOSConnection(SNACBased):
             # which means add some deferred stuff
             d = defer.Deferred()
             self.requestCallbacks[snac[4]] = d
-            d.addCallback(self._cbRequestSSI, (revision, groups, permit, deny, permitMode, visibility, iconcksum))
-            d.addErrback(self._ebDeferredRequestSSIError, revision, groups, permit, deny, permitMode, visibility, iconcksum)
+            d.addCallback(self._cbRequestSSI, (revision, groups, permit, deny, permitMode, visibility, iconcksum, permitDenyInfo))
+            d.addErrback(self._ebDeferredRequestSSIError, revision, groups, permit, deny, permitMode, visibility, iconcksum, permitDenyInfo)
             return d
         if (len(groups) <= 0):
             gusers = None
         else:
             gusers = groups[0].users
-        return (gusers,permit,deny,permitMode,visibility,iconcksum,timestamp,revision)
+        return (gusers,permit,deny,permitMode,visibility,iconcksum,timestamp,revision,permitDenyInfo)
 
-    def _ebDeferredRequestSSIError(self, error, revision, groups, permit, deny, permitMode, visibility, iconcksum):
+    def _ebDeferredRequestSSIError(self, error, revision, groups, permit, deny, permitMode, visibility, iconcksum, permitDenyInfo):
         log.msg('ERROR IN REQUEST SSI DEFERRED %s' % error)
 
     def activateSSI(self):
@@ -1795,6 +1835,8 @@ class BOSConnection(SNACBased):
         if groupID is None:
             if isinstance(item, SSIIconSum):
                 groupID = 0
+            elif isinstance(item, SSIPDInfo):
+                groupID = 0
             elif isinstance(item, SSIGroup):
                 groupID = 0
             else:
@@ -1802,6 +1844,8 @@ class BOSConnection(SNACBased):
         if buddyID is None:
             if isinstance(item, SSIIconSum):
                 buddyID = 0x5dd6
+            elif isinstance(item, SSIPDInfo):
+                buddyID = 0xffff
             elif hasattr(item, "group"):
                 buddyID = item.group.findIDFor(item)
             else:
