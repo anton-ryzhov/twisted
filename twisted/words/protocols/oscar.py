@@ -556,7 +556,6 @@ class SSIPDInfo:
         self.name = name
         self.groupID = groupID
         self.buddyID = buddyID
-        self.tlvs = tlvs
         self.permitMode = tlvs.get(0xca, None)
         self.visibility = tlvs.get(0xcb, None)
 
@@ -564,9 +563,9 @@ class SSIPDInfo:
         data = struct.pack(">H", len(self.name)) + self.name
         tlvs = ""
         if self.permitMode:
-            tlvs += TLV(0x00ca,struct.pack('!B', self.permitMode))
+            tlvs += TLV(0xca,struct.pack('!B', self.permitMode))
         if self.visibility:
-            tlvs += TLV(0x00cb,self.visibility)
+            tlvs += TLV(0xcb,self.visibility)
         data += struct.pack(">4H", self.groupID, self.buddyID, AIM_SSI_TYPE_PDINFO, len(tlvs))
         return data+tlvs
 
