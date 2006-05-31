@@ -572,12 +572,12 @@ class SSIPDInfo:
     def __str__(self):
         s = '<SSIPDInfo perm:'
         if self.permitMode:
-            s=s+{0x01:'permitall',0x02:'denyall',0x03:'permitsome',0x04:'denysome',0x05:'permitbuddies'}.get(ord(self.permitMode),"unknown")
+            s=s+{AIM_SSI_PERMDENY_PERMIT_ALL:'permitall',AIM_SSI_PERMDENY_DENY_ALL:'denyall',AIM_SSI_PERMDENY_PERMIT_SOME:'permitsome',AIM_SSI_PERMDENY_DENY_SOME:'denysome',AIM_SSI_PERMDENY_PERMIT_BUDDIES:'permitbuddies'}.get(ord(self.permitMode),"unknown")
         else:
             s=s+"notset"
         s=s+' visi:'
         if self.visibility:
-            s=s+{'\xff\xff\xff\xff':'all','\x00\x00\x00\x04':'notaim'}.get(self.visibility,"unknown")
+            s=s+{AIM_SSI_VISIBILITY_ALL:'all',AIM_SSI_VISIBILITY_NOTAIM:'notaim'}.get(self.visibility,"unknown")
         else:
             s=s+"notset"
         s=s+' (ID %d)' % (self.buddyID)
@@ -1737,9 +1737,9 @@ class BOSConnection(SNACBased):
             elif itemType == AIM_SSI_TYPE_PDINFO: # permit deny info
                 permitDenyInfo = SSIPDInfo(name, groupID, buddyID, tlvs)
                 if tlvs.has_key(0xca):
-                    permitMode = {0x01:'permitall',0x02:'denyall',0x03:'permitsome',0x04:'denysome',0x05:'permitbuddies'}.get(ord(tlvs[0xca]),None)
+                    permitMode = {AIM_SSI_PERMDENY_PERMIT_ALL:'permitall',AIM_SSI_PERMDENY_DENY_ALL:'denyall',AIM_SSI_PERMDENY_PERMIT_SOME:'permitsome',AIM_SSI_PERMDENY_DENY_SOME:'denysome',AIM_SSI_PERMDENY_PERMIT_BUDDIES:'permitbuddies'}.get(ord(tlvs[0xca]),None)
                 if tlvs.has_key(0xcb):
-                    visibility = {'\xff\xff\xff\xff':'all','\x00\x00\x00\x04':'notaim'}.get(tlvs[0xcb],None)
+                    visibility = {AIM_SSI_VISIBILITY_ALL:'all',AIM_SSI_VISIBILITY_NOTAIM:'notaim'}.get(tlvs[0xcb],None)
             elif itemType == AIM_SSI_TYPE_PRESENCEPREFS: # presence preferences
                 pass
             elif itemType == AIM_SSI_TYPE_ICQSHORTCUT: # ICQ2K shortcuts bar?
@@ -3381,3 +3381,18 @@ AIM_SSI_TYPE_SMS = 0x0010
 AIM_SSI_TYPE_IMPORTTIME = 0x0013
 AIM_SSI_TYPE_ICONINFO = 0x0014
 AIM_SSI_TYPE_LOCALBUDDYNAME = 0x0131
+
+###
+# Permission Types
+###
+AIM_SSI_PERMDENY_PERMIT_ALL = 0x01
+AIM_SSI_PERMDENY_DENY_ALL = 0x02
+AIM_SSI_PERMDENY_PERMIT_SOME = 0x03
+AIM_SSI_PERMDENY_DENY_SOME = 0x04
+AIM_SSI_PERMDENY_PERMIT_BUDDIES = 0x05
+
+###
+# Visibility Masks
+###
+AIM_SSI_VISIBILITY_ALL = '\xff\xff\xff\xff'
+AIM_SSI_VISIBILITY_NOTAIM = '\x00\x00\x00\x04'
