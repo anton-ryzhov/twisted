@@ -3103,7 +3103,8 @@ class OscarAuthenticator(OscarConnection):
         if not snac:
             log.msg("Illegal SNAC data received in oscar_Key: %s" % data)
             return
-        key=snac[5][2:]
+        len=ord(snac[5][0]) * 256 + ord(snac[5][1])
+        key=snac[5][2:2+len]
         encpass=encryptPasswordMD5(self.password,key)
         self.sendFLAP(SNAC(0x17,0x02,0,
                            TLV(TLV_USERNAME,self.username)+
