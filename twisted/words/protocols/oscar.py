@@ -14,7 +14,7 @@ SMS Related code by Uri Shaked <uri@keves.org>
 
 from __future__ import nested_scopes
 
-from twisted.internet import reactor, main, defer, protocol
+from twisted.internet import reactor, defer, protocol
 from twisted.python import log
 
 from scheduler import Scheduler
@@ -62,15 +62,18 @@ def SNAC(fam,sub,id,data,flags=[0,0]):
     return head+str(data)
 
 def readSNAC(data):
-    if len(data) < 10: return None
-    head=list(struct.unpack("!HHBBL",data[:10]))
-    datapos = 10
-    if 0x80 & head[2]:
-        # Ah flag 0x8000, this is some sort of family indicator, skip it,
-        # we don't care.
-        sLen,id,length = struct.unpack(">HHH", data[datapos:datapos+6])
-        datapos = datapos + 6 + length
-    return head+[data[datapos:]]
+    try:
+        if len(data) < 10: return None
+        head=list(struct.unpack("!HHBBL",data[:10]))
+        datapos = 10
+        if 0x80 & head[2]:
+            # Ah flag 0x8000, this is some sort of family indicator, skip it,
+            # we don't care.
+            sLen,id,length = struct.unpack(">HHH", data[datapos:datapos+6])
+            datapos = datapos + 6 + length
+        return head+[data[datapos:]]
+    except struct.error:
+        return None
 
 def oldICQCommand(commandCode, commandData, username, sequence):
     """
@@ -426,13 +429,13 @@ class SSIGroup:
         tlvs = TLV(0xc8, struct.pack(">H",len(self.users)))
         data += struct.pack(">4H", self.groupID, self.buddyID, 1, len(tlvs))
         return data+tlvs
-#      if len(self.users) > 0:
-#              tlvData = TLV(0xc8, reduce(lambda x,y:x+y, [struct.pack('!H',self.usersToID[x]) for x in self.users]))
-#      else:
-#              tlvData = ""
-#        return struct.pack('!H', len(self.name)) + self.name + \
-#               struct.pack('!HH', groupID, buddyID) + '\000\001' + \
-#               struct.pack(">H", len(tlvData)) + tlvData
+       #if len(self.users) > 0:
+       #        tlvData = TLV(0xc8, reduce(lambda x,y:x+y, [struct.pack('!H',self.usersToID[x]) for x in self.users]))
+       #else:
+       #        tlvData = ""
+       #  return struct.pack('!H', len(self.name)) + self.name + \
+       #         struct.pack('!HH', groupID, buddyID) + '\000\001' + \
+       #         struct.pack(">H", len(tlvData)) + tlvData
 
     def __str__(self):
         s = '<SSIGroup %s (ID %d)' % (self.name, self.buddyID)
@@ -510,9 +513,9 @@ class SSIBuddy:
             tlvs += TLV(0x0145, self.firstMessage)
         data += struct.pack(">4H", self.groupID, self.buddyID, 0, len(tlvs))
         return data+tlvs
-#        tlvData = reduce(lambda x,y: x+y, map(lambda (k,v):TLV(k,v), self.tlvs.items()), '\000\000')
-#        return struct.pack('!H', len(self.name)) + self.name + \
-#               struct.pack('!HH', groupID, buddyID) + '\000\000' + tlvData
+        #tlvData = reduce(lambda x,y: x+y, map(lambda (k,v):TLV(k,v), self.tlvs.items()), '\000\000')
+        #return struct.pack('!H', len(self.name)) + self.name + \
+        #       struct.pack('!HH', groupID, buddyID) + '\000\000' + tlvData
 
     def __str__(self):
         s = '<SSIBuddy %s (ID %d)' % (self.name, self.buddyID)
@@ -597,6 +600,7 @@ class OscarConnection(protocol.Protocol):
         self.outTime=time.time()
         self.stopKeepAliveID = None
         self.setKeepAlive(240) # 240 seconds = 4 minutes
+        self.transport.setTcpNoDelay(True)
 
     def connectionLost(self, reason):
         log.msg("Connection Lost! %s" % self)
@@ -614,7 +618,7 @@ class OscarConnection(protocol.Protocol):
         seqnum=self.seqnum
         head=struct.pack("!BBHH", 0x2a, channel,
                          seqnum, len(data))
-        self.transport.write(head+str(data))
+        reactor.callFromThread(self.transport.write,head+str(data))
         #if isinstance(self, ChatService):
         #    logPacketData(head+str(data))
 
@@ -639,6 +643,7 @@ class OscarConnection(protocol.Protocol):
             func=getattr(self,"oscar_%s"%self.state,None)
             if not func:
                 log.msg("no func for state: %s" % self.state)
+                return
             state=func(flap)
             if state:
                 self.state=state
@@ -780,7 +785,10 @@ class SNACBased(OscarConnection):
         change of rate information.
         """
         # this can be parsed, maybe we can even work it in
-        info=struct.unpack('!HHLLLLLLL',snac[5][8:40])
+        try:
+            info=struct.unpack('!HHLLLLLLL',snac[5][8:40])
+        except struct.error:
+            return
         code=info[0]
         rateclass=info[1]
         window=info[2]
@@ -819,20 +827,20 @@ class SNACBased(OscarConnection):
 
 
 class BOSConnection(SNACBased):
-#    snacFamilies = {
-#        0x01:(3, 0x0110, 0x0629),
-#        0x02:(1, 0x0110, 0x0629),
-#        0x03:(1, 0x0110, 0x0629),
-#        0x04:(1, 0x0110, 0x0629),
-#        0x06:(1, 0x0110, 0x0629),
-#        0x08:(1, 0x0104, 0x0001),
-#        0x09:(1, 0x0110, 0x0629),
-#        0x0a:(1, 0x0110, 0x0629),
-#        0x0b:(1, 0x0104, 0x0001),
-#        0x0c:(1, 0x0104, 0x0001),
-#        0x13:(3, 0x0110, 0x0629),
-#        0x15:(1, 0x0110, 0x047c)
-#    }
+    #snacFamilies = {
+    #    0x01:(3, 0x0110, 0x0629),
+    #    0x02:(1, 0x0110, 0x0629),
+    #    0x03:(1, 0x0110, 0x0629),
+    #    0x04:(1, 0x0110, 0x0629),
+    #    0x06:(1, 0x0110, 0x0629),
+    #    0x08:(1, 0x0104, 0x0001),
+    #    0x09:(1, 0x0110, 0x0629),
+    #    0x0a:(1, 0x0110, 0x0629),
+    #    0x0b:(1, 0x0104, 0x0001),
+    #    0x0c:(1, 0x0104, 0x0001),
+    #    0x13:(3, 0x0110, 0x0629),
+    #    0x15:(1, 0x0110, 0x047c)
+    #}
     snacFamilies = {
         0x01:(4, 0x0110, 0x08e4),
         0x02:(1, 0x0110, 0x08e4),
@@ -882,6 +890,17 @@ class BOSConnection(SNACBased):
             return u, rest
         else:
             return u
+
+    def parseProfile(self, data):
+        l=ord(data[0])
+        warn, tlvcnt = struct.unpack("!HH",data[1+l:5+l])
+        return readTLVs(data[5+l:], tlvcnt)[0]
+
+    def parseAway(self, data):
+        l=ord(data[0])
+        warn, tlvcnt = struct.unpack("!HH",data[1+l:5+l])
+        return readTLVs(data[5+l:], tlvcnt)[0]
+
 
     def parseMoreInfo(self, data):
         # why did i have this here and why did dsh remove it
@@ -1320,10 +1339,10 @@ class BOSConnection(SNACBased):
                 else:
                     log.msg('unknown TLV for incoming IM, %04x, %s' % (k,repr(v)))
 
-#  unknown tlv for user SNewdorf
-#  t: 29
-#  v: '\x00\x00\x00\x05\x02\x01\xd2\x04r\x00\x01\x01\x10/\x8c\x8b\x8a\x1e\x94*\xbc\x80}\x8d\xc4;\x1dEM'
-# XXX what is this?
+                    #  unknown tlv for user SNewdorf
+                    #  t: 29
+                    #  v: '\x00\x00\x00\x05\x02\x01\xd2\x04r\x00\x01\x01\x10/\x8c\x8b\x8a\x1e\x94*\xbc\x80}\x8d\xc4;\x1dEM'
+                    # XXX what is this?
             self.receiveMessage(user, multiparts, flags)
         elif channel == 2: # rendezvous
             status = struct.unpack('!H',tlvs[5][:2])[0]
@@ -1592,7 +1611,7 @@ class BOSConnection(SNACBased):
         uin = snac[5][pos+1:pos+1+uinLen]
         self.youWereAdded(uin)
 
-    # methods to be called by the client, and their support methods
+# Methods to be called by the client, and their support methods
     def requestSelfInfo(self):
         """
         ask for the OSCARUser for ourselves
@@ -1805,12 +1824,12 @@ class BOSConnection(SNACBased):
         #    sLen,id,length = struct.unpack(">HHH", snac[5][:6])
         #    pos = 6 + length
         if snac[5][pos:pos+2] == "\00\00":
-# success
-#                data = struct.pack(">H", len(groupName))+groupName
-#                data += struct.pack(">HH", 0, 1)
-#                tlvData = TLV(0xc8, struct.pack(">H", buddyID))
-#                data += struct.pack(">H", len(tlvData))+tlvData
-#                self.sendSNACnr(0x13,0x09, data)
+                #success
+                #data = struct.pack(">H", len(groupName))+groupName
+                #data += struct.pack(">HH", 0, 1)
+                #tlvData = TLV(0xc8, struct.pack(">H", buddyID))
+                #data += struct.pack(">H", len(tlvData))+tlvData
+                #self.sendSNACnr(0x13,0x09, data)
             if item.buddyID != 0: # is it a buddy or a group?
                 self.buddyAdded(item.name)
         elif snac[5][pos:pos+2] == "\00\x0a":
@@ -2197,11 +2216,14 @@ class BOSConnection(SNACBased):
         return self.sendSNAC(0x02, 0x15, '\x00\x00\x00\x01'+chr(len(user))+user).addCallback(self._cbGetProfile).addErrback(self._cbGetProfileError)
 
     def _cbGetProfile(self, snac):
-        user, rest = self.parseUser(snac[5],1)
-        tlvs = readTLVs(rest)
-        #encoding = tlvs[1]  We're ignoring this for now
-        #profile = tlvs[2]  This is what we're after
-
+        try:
+            user, rest = self.parseUser(snac[5],1)
+            tlvs = readTLVs(rest)
+        except (TypeError, struct.error):
+            try:
+                tlvs = self.parseProfile(snac[5])
+            except (TypeError, struct.error):
+                return [None, None]
         return tlvs.get(0x02,None)
 
     def _cbGetProfileError(self, result):
@@ -2424,13 +2446,15 @@ class BOSConnection(SNACBased):
 
     def _cbGetAway(self, snac):
         log.msg("_cbGetAway %r" % snac)
-        user, rest = self.parseUser(snac[5],1)
-        tlvs = readTLVs(rest)
-        return [tlvs.get(0x03,None),tlvs.get(0x04,None)] # return None if there is no away message
+        try:
+            tlvs = self.parseAway(snac[5])
+        except (TypeError, struct.error):
+            return [None, None]
+        return [tlvs.get(0x03,None),tlvs.get(0x04,None)]
 
     #def acceptSendFileRequest(self,
 
-    # methods to be overriden by the client
+# Methods to be overriden by the client
     def initDone(self):
         """
         called when we get the rate information, which means we should do other init. stuff.
@@ -2568,7 +2592,6 @@ class BOSConnection(SNACBased):
         called when a user sends their buddy icon
         """
         pass
-
 
 
 class OSCARService(SNACBased):
@@ -3059,31 +3082,31 @@ class OscarAuthenticator(OscarConnection):
         else:
             # stupid max password length...
             encpass=encryptPasswordICQ(self.password[:8])
-#            self.sendFLAP('\000\000\000\001'+
-#                          TLV(0x01,self.username)+
-#                          TLV(0x02,encpass)+
-#                          TLV(0x03,'ICQ Inc. - Product of ICQ (TM).2001b.5.18.1.3659.85')+
-#                          TLV(0x16,"\x01\x0a")+
-#                          TLV(0x17,"\x00\x05")+
-#                          TLV(0x18,"\x00\x12")+
-#                          TLV(0x19,"\000\001")+
-#                          TLV(0x1a,"\x0eK")+
-#                          TLV(0x14,"\x00\x00\x00U")+
-#                          TLV(0x0f,"en")+
-#                          TLV(0x0e,"us"),0x01)
+            #self.sendFLAP('\000\000\000\001'+
+            #              TLV(0x01,self.username)+
+            #              TLV(0x02,encpass)+
+            #              TLV(0x03,'ICQ Inc. - Product of ICQ (TM).2001b.5.18.1.3659.85')+
+            #              TLV(0x16,"\x01\x0a")+
+            #              TLV(0x17,"\x00\x05")+
+            #              TLV(0x18,"\x00\x12")+
+            #              TLV(0x19,"\000\001")+
+            #              TLV(0x1a,"\x0eK")+
+            #              TLV(0x14,"\x00\x00\x00U")+
+            #              TLV(0x0f,"en")+
+            #              TLV(0x0e,"us"),0x01)
 
-#            self.sendFLAP('\000\000\000\001'+
-#                          TLV(0x01,self.username)+
-#                          TLV(0x02,encpass)+
-#                          TLV(0x03,'ICQ Inc. - Product of ICQ (TM).2003a.5.45.1.3777.85')+
-#                          TLV(0x16,"\x01\x0a")+
-#                          TLV(TLV_CLIENTMAJOR,"\x00\x05")+
-#                          TLV(TLV_CLIENTMINOR,"\x00\x2d")+
-#                          TLV(0x19,"\000\001")+
-#                          TLV(TLV_CLIENTSUB,"\x0e\xc1")+
-#                          TLV(0x14,"\x00\x00\x00\x55")+
-#                          TLV(0x0f,"en")+
-#                          TLV(0x0e,"us"),0x01)
+            #self.sendFLAP('\000\000\000\001'+
+            #              TLV(0x01,self.username)+
+            #              TLV(0x02,encpass)+
+            #              TLV(0x03,'ICQ Inc. - Product of ICQ (TM).2003a.5.45.1.3777.85')+
+            #              TLV(0x16,"\x01\x0a")+
+            #              TLV(TLV_CLIENTMAJOR,"\x00\x05")+
+            #              TLV(TLV_CLIENTMINOR,"\x00\x2d")+
+            #              TLV(0x19,"\000\001")+
+            #              TLV(TLV_CLIENTSUB,"\x0e\xc1")+
+            #              TLV(0x14,"\x00\x00\x00\x55")+
+            #              TLV(0x0f,"en")+
+            #              TLV(0x0e,"us"),0x01)
             self.sendFLAP('\000\000\000\001'+
                           TLV(0x01,self.username)+
                           TLV(0x02,encpass)+
