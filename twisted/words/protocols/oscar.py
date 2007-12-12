@@ -31,6 +31,7 @@ import binascii
 import threading
 import socks5, sockserror
 import countrycodes
+import config
 
 def logPacketData(data):
     # Comment out to display packet log data
@@ -226,11 +227,9 @@ def guess_encoding(data, defaultencoding='iso-8859-1'):
         else:
             break
     if not successful_encoding:
-         raise UnicodeError(
-        'Unable to decode input data.  Tried the following encodings: %s.'
-        % ', '.join([repr(enc) for enc in encodings if enc]))
-    else:
-         return (decoded, successful_encoding)
+         decoded = "We have received text in unsupported encoding.\n" + repr(data)
+         successful_encoding = "iso-8859-1"
+    return (decoded, successful_encoding)
 
 
 class OSCARUser:
@@ -366,6 +365,11 @@ class OSCARUser:
                         else:
                             self.url=None
                         log.msg("   extracted itunes URL: %s"%(repr(self.url)))
+                    elif exttype == 0x0d or exttype ==  0x08:
+		        #XXX attempt to resolve problem with new ICQ clients: this needs to be verified by reverse engineering of the protocol
+		        self.statusencoding = "icq51pseudounicode"
+                        log.msg("   status message encoding: %s"%(str(self.statusencoding)))
+			# XXX: there should be probably more information available for extraction here
                     else:
                         log.msg("   unknown extended status type: %d\ndata: %s"%(ord(v[1]), repr(v[:ord(v[3])+4])))
                     #v=v[ord(v[3])+4:]
@@ -425,7 +429,7 @@ class SSIGroup:
         user.group = None
 
     def oscarRep(self):
-        data = struct.pack(">H", len(self.name)) +self.name
+        data = struct.pack(">H", len(self.name)) +self.name.encode("utf-8")
         tlvs = TLV(0xc8, struct.pack(">H",len(self.users)))
         data += struct.pack(">4H", self.groupID, self.buddyID, 1, len(tlvs))
         return data+tlvs
@@ -494,7 +498,7 @@ class SSIBuddy:
                 self.firstMessage = v # unix timestamp
  
     def oscarRep(self):
-        data = struct.pack(">H", len(self.name)) + self.name
+        data = struct.pack(">H", len(self.name)) + self.name.encode("utf-8")
         tlvs = ""
         if not self.authorized:
             tlvs += TLV(0x0066) # awaiting authorization
@@ -540,7 +544,7 @@ class SSIIconSum:
         log.msg("icon sum is %s" % binascii.hexlify(self.iconSum))
  
     def oscarRep(self):
-        data = struct.pack(">H", len(self.name)) + self.name
+        data = struct.pack(">H", len(self.name)) + self.name.encode("utf-8")
         tlvs = TLV(0x00d5,struct.pack('!BB', 0x00, len(self.iconSum))+self.iconSum)+TLV(0x0131, "")
         data += struct.pack(">4H", self.groupID, self.buddyID, AIM_SSI_TYPE_ICONINFO, len(tlvs))
         return data+tlvs
@@ -563,7 +567,7 @@ class SSIPDInfo:
         self.visibility = tlvs.get(0xcb, None)
 
     def oscarRep(self):
-        data = struct.pack(">H", len(self.name)) + self.name
+        data = struct.pack(">H", len(self.name)) + self.name.encode("utf-8")
         tlvs = ""
         if self.permitMode:
             tlvs += TLV(0xca,struct.pack('!B', self.permitMode))
@@ -870,7 +874,7 @@ class BOSConnection(SNACBased):
         self.connectPort = 5190
         # Note that this is "no unicode" default encoding
         # We use unicode if it's there
-        self.defaultEncoding = 'iso-8859-1'
+        self.defaultEncoding = config.encoding
 
         if not self.capabilities:
             self.capabilities = [CAP_CHAT]
@@ -1312,7 +1316,7 @@ class BOSConnection(SNACBased):
                             if messageLength > 0: multiparts.append(tuple(message))
                         else:
                             # Uh... what is this???
-                            log.msg("unknown message fragment %d %d: %v" % (fragtype, fragver, str(v)))
+                            log.msg("unknown message fragment %d %d: %s" % (fragtype, fragver, str(v)))
                         v = v[4+fraglen:]
                 elif k == 0x03: # server ack requested
                     flags.append('acknowledge')
@@ -2022,7 +2026,7 @@ class BOSConnection(SNACBased):
                     charSet = 0x0000
                 except:
                     try:
-                        part[0] = part[0].encode('iso-8859-1')
+                        part[0] = part[0].encode(config.encoding)
                         charSet = 0x0003
                     except:
                         try:
