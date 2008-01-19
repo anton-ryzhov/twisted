@@ -200,7 +200,7 @@ def getIconSum(buf):
 # in the docutils extension module
 # see http://docutils.sourceforge.net
 # modified for better use here
-def guess_encoding(data, defaultencoding='iso-8859-1'):
+def guess_encoding(data, defaultencoding=config.encoding):
     """
     Given a byte string, attempt to decode it.
     Tries 'utf-16be, 'utf-8' and 'iso-8859-1' (or something else) encodings.
@@ -1645,12 +1645,12 @@ class BOSConnection(SNACBased):
                     # Offline message
                     senderuin = struct.unpack('<I',v[10:14])[0]
                     #print "senderuin: "+str(senderuin)+"\n"
-                    msg_date = str( "%4d-%02d-%02d %02d:%02d"
-                                    % struct.unpack('<HBBBB', v[14:20]) )
+                    msg_date = str( "%4d-%02d-%02dT%02d:%02d:00Z" #XEP-091 date format
+                                 % struct.unpack('<HBBBB', v[14:20]) )
                     messagetype, messageflags,messagelen = struct.unpack('<BBH',v[20:24])
                     umessage, encoding = guess_encoding(v[24:24+messagelen-1],self.defaultEncoding)
                     log.msg("Converted message, encoding %r: %r" % (encoding, umessage))
-                    umessage = umessage + "\n\n/sent " + msg_date
+                    #umessage = umessage + "\n\n/sent " + msg_date
                     message = [ umessage.encode("utf-16be"), "unicode" ]
                     #message = [ str( v[24:24+messagelen-1] )
                     #            + "\n\n/sent " + msg_date ]
@@ -1661,7 +1661,7 @@ class BOSConnection(SNACBased):
                         tlvs = dict()
                         multiparts.append(tuple(message))
                         user = OSCARUser(str(senderuin), None, tlvs)
-                        self.receiveMessage(user, multiparts, flags)
+                        self.receiveMessage(user, multiparts, flags, msg_date)
                 elif (type == 0x42):
                     # End of offline messages
                     reqdata = '\x08\x00'+struct.pack("<I",int(self.username))+'\x3e\x00\x02\x00'
